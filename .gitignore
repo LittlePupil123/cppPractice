@@ -16,3 +16,14 @@ a.out
 /bin/
 /out/
 /cmake-build-*/
+
+# cppPractice 下的可执行文件
+/cppPractice/BFS（LuoGu_B3625）
+/cppPractice/BinSearch
+/cppPractice/DFS
+/cppPractice/SearchRectangle
+/cppPractice/heapSort
+/cppPractice/helloWorld
+/cppPractice/mergeSort
+/cppPractice/quickSort（双指针版）
+/cppPractice/“虚幻”题目/杨辉三角输出
