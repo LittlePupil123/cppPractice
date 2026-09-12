@@ -1,0 +1,18 @@
+
+# 编译产物
+*.o
+*.a
+*.so
+*.so.*
+*.d
+*.dSYM/
+
+# 常见可执行文件
+a.out
+*.out
+
+# 构建目录
+/build/
+/bin/
+/out/
+/cmake-build-*/
