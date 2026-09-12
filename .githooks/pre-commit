@@ -1,0 +1,10 @@
+#!/bin/bash
+bad=0
+while IFS= read -r -d '' f; do
+    [ -f "$f" ] || continue
+    if file -b "$f" | grep -q 'ELF.*executable'; then
+        echo "❌ 拒绝提交 ELF 可执行文件: $f" >&2
+        bad=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+exit $bad
