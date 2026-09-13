@@ -56,6 +56,7 @@
 * git checkout <分支名称>：切换到分支；==等价于 git switch <分支名称>==
 >git checkout 还可用于恢复文件，因此checkout的命令可被分为两部分，切换分支指令switch。恢复指令restore。
 * git merge <要被合并的分支> ：将指定分支合并到当前所在的分支
+
 ---
 ## github远程仓库指南
 
