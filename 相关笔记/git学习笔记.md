@@ -50,13 +50,19 @@
 
 对于一些更复杂的规则和忽略，可以了解git的hook文件
 
+## 分支相关
+* git branch：查看当前仓库的所有分支(标绿部分代表当前所在分支)
+* git branch <分支名称>：创建一个新分支
+* git checkout <分支名称>：切换到分支；==等价于 git switch <分支名称>==
+>git checkout 还可用于恢复文件，因此checkout的命令可被分为两部分，切换分支指令switch。恢复指令restore。
+* git merge <要被合并的分支> ：将指定分支合并到当前所在的分支
 ---
-# github远程仓库指南
----
-## ssh配置和克隆仓库
+## github远程仓库指南
+
+### ssh配置和克隆仓库
 [配置ssh连接的视频](https://www.bilibili.com/video/BV1HM411377j/?spm_id_from=333.788.videopod.sections&vd_source=8a611acdc0bf9f88a4d220efeae4005e&p=11)
 
-## 关联本地仓库和远程仓库
+### 关联本地仓库和远程仓库
 添加远程仓库：
 >git remote <远程仓库别名（自行命名）> <远程仓库地址>
 >git push <远程仓库名> <本地分支名>:<远程分支>
@@ -67,6 +73,3 @@
 拉取远程仓库内容（并自动合并，如果没冲突的话）：
 >git pull <远程仓库名> <远程分支名>:<本地分支名>
 
----
-# 分支
----
