@@ -12,10 +12,10 @@ a.out
 *.out
 
 # 构建目录
-/build/
-/bin/
-/out/
-/cmake-build-*/
+build/
+bin/
+out/
+cmake-build-*/
 
 # cppPractice 下的可执行文件
 /cppPractice/BFS（LuoGu_B3625）
@@ -27,3 +27,7 @@ a.out
 /cppPractice/mergeSort
 /cppPractice/quickSort（双指针版）
 /cppPractice/“虚幻”题目/杨辉三角输出
+
+# Rust 编译产物
+target/
+**/target/

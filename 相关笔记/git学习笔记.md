@@ -54,3 +54,19 @@
 # github远程仓库指南
 ---
 ## ssh配置和克隆仓库
+[配置ssh连接的视频](https://www.bilibili.com/video/BV1HM411377j/?spm_id_from=333.788.videopod.sections&vd_source=8a611acdc0bf9f88a4d220efeae4005e&p=11)
+
+## 关联本地仓库和远程仓库
+添加远程仓库：
+>git remote <远程仓库别名（自行命名）> <远程仓库地址>
+>git push <远程仓库名> <本地分支名>:<远程分支>
+
+查看远程仓库：
+>git remote -v
+
+拉取远程仓库内容（并自动合并，如果没冲突的话）：
+>git pull <远程仓库名> <远程分支名>:<本地分支名>
+
+---
+# 分支
+---
