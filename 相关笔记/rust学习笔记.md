@@ -694,3 +694,171 @@ for c in "中国人".chars() {
 
 对于 Rust 而言，安全和性能是写到骨子里的核心特性，如果使用 GC，那么会牺牲性能；如果使用手动管理内存，那么会牺牲安全，这该怎么办？为此，Rust 的开发者想出了一个无比惊艳的办法：变量在离开作用域后，就自动释放其占用的内存
 与其它系统编程语言的 free 函数相同，Rust 也提供了一个释放内存的函数： drop，但是不同的是，其它语言要手动调用 free 来释放每一个变量占用的内存，而 Rust 则在变量离开作用域时，自动调用 drop 函数
+
+### 元组
+--声明：
+```rust
+fn main() {
+    let tup: (i32, f64, u8) = (500, 6.4, 1); //该元组类型是（i32,f64,u8）
+}
+```
+
+--访问元素：
+```rust
+fn main(){
+    let (a,b,c)=tup; //使用let进行模式匹配来解构访问元组
+    let (a,_,c)=tup; //_表示该位置不关心，仅占位，将a绑定500，c绑定1
+    let (..,c)=tup; //表示忽略多余部分，将元组最后一个值1绑定给c
+    tup.0;
+    tup.1;
+    tup.2;//使用.操作符进行访问
+}
+```
+
+### 结构体
+结构体跟之前讲过的元组有些相像：都是由多种类型组合而成。但是与元组不同的是，**结构体可以为内部的每个字段起一个富有含义的名称。**因此结构体更加灵活更加强大，你无需依赖这些字段的顺序来访问和解析它们。
+
+* struct定义：
+```rust
+struct User {
+    active: bool,
+    username: String,
+    email: String,
+    sign_in_count: u64,
+}
+```
+
+* 创建struct实例（好像类+构造函数！）：
+```rust
+    let user1 = User {
+        email: String::from("someone@example.com"),
+        username: String::from("someusername123"),
+        active: true,
+        sign_in_count: 1,
+    };//有;是一个语句
+```
+
+**注意：**
+1. 初始化实例时，每个字段都需要进行初始化
+2. 初始化时的字段顺序不需要和结构体定义时的顺序一致
+
+* 调用实例元素
+和c++一致，用' .'调用元素
+ ==注意，如果要修改实例元素，必须声明实例为mut==
+
+* 结构体简化创建
+```rust
+fn build_user(email: String, username: String) -> User {
+    User {
+        email: email, //或者email，因为传入形式参数名称和原结构体元素名称一致
+        username: username,//或者username
+        active: true,
+        sign_in_count: 1,
+    }//没有;是表达式
+}
+``` 
+它接收两个字符串参数： email 和 username，然后使用它们来创建一个 User 结构体，并且返回。
+==注意这里分行末尾是,而不是;==
+并且结构体表达式会返回一个结构体实例
+**我们发现结构体内元素变量绑定所用符号是:而不是=，因为: 在 Rust 里表示“名字 → 值”的映射/绑定关系，而 = 表示“赋值给一个已存在的变量”。**
+
+* 根据已有结构体创建新结构体
+```rust
+//常见方法，一一赋值字段
+  let user2 = User {
+        active: user1.active,
+        username: user1.username,
+        email: String::from("another@example.com"),
+        sign_in_count: user1.sign_in_count,
+    };
+
+//省略写法：由于user2和user1只有email不一样，其他的都一样，可以用..省略符号
+  let user2 = User {
+        email: String::from("another@example.com"),
+        ..user1 //必须在结构体尾部使用，才能将剩余未绑定的字段用user1的值来赋值
+    };
+```
+
+==注意，根据已有实例创建新实例本质上还是变量绑定赋值，所以对于没有copy特征的变量，将会发生**所有权转移**==，所以user1内关于String类型的字段无法使用了，但其他的基本类型可以
+
+#### 特殊结构体
+* 元组结构体：结构体有名称，但是结构体内部的字段没有名称，长得像元组
+```rust
+    struct Color(i32, i32, i32);
+    struct Point(i32, i32, i32);
+
+    let black = Color(0, 0, 0);
+    let origin = Point(0, 0, 0);
+```
+* 单元结构体：无字段属性，仅用来占位
+```rust
+struct AlwaysEqual;
+
+let subject = AlwaysEqual;//赋值简单
+
+// 我们不关心 AlwaysEqual 的字段数据，只关心它的行为，因此将它声明为单元结构体，然后再为它实现某个特征
+impl SomeTrait for AlwaysEqual {
+
+}
+```
+#### debug打印结构体信息
+1. **采用#[derive(Debug)]提前标记代码为debug状态，然后可使用{:?}或{:#?}替代{}来打印结构体**
+```rust
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+fn main() {
+    let rect1 = Rectangle {
+        width: 30,
+        height: 50,
+    };
+
+    println!("rect1 is {:?}", rect1); //{:?}可换成{:#?}
+}
+
+/*输出信息
+$ cargo run
+rect1 is Rectangle { width: 30, height: 50 }
+
+换成{:#?}的打印信息：
+rect1 is Rectangle {
+    width: 30,
+    height: 50,
+}
+*/
+```
+
+2. dbg!宏
+它会拿走表达式的所有权，然后打印出相应的文件名、行号等 debug 信息，当然还有我们需要的表达式的求值结果。除此之外，它最终还会把表达式值的所有权返回！
+
+```rust
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+fn main() {
+    let scale = 2;
+    let rect1 = Rectangle {
+        width: dbg!(30 * scale), //将值30*scale表达式返回的值传给了width
+        height: 50,
+    };
+
+    dbg!(&rect1);
+}
+
+/*
+输出信息：
+$ cargo run
+[src/main.rs:10] 30 * scale = 60
+[src/main.rs:14] &rect1 = Rectangle {
+    width: 60,
+    height: 50,
+}
+*/
+
+```
