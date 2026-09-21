@@ -860,5 +860,139 @@ $ cargo run
     height: 50,
 }
 */
+```
 
+### 枚举（enum）（枚举类型，枚举值）
+**枚举类型**是一个类型，它会包含所有可能的枚举成员，而**枚举值**是该类型中的具体某个成员的实例。
+一个变量（或实例）只可能是枚举类型中的==一个==，但这些枚举值可能在某些方面或本质上是一样的，所以可以归纳进一个枚举类型里面：比如扑克牌四种花色就是一类枚举，各个花色是枚举值，而都属于扑克牌，所以可归纳进“扑克牌”这个枚举类型里面
+
+#### 创建枚举类型与实例
+```rust
+enum PokerSuit {
+  Clubs,
+  Spades,
+  Diamonds,
+  Hearts,
+}
+
+let heart = PokerSuit::Hearts;
+let diamond = PokerSuit::Diamonds; //通过::访问枚举类型的具体成员，创建实例
+```
+
+#### 定义函数使用枚举
+```rust
+fn main() {
+    let heart = PokerSuit::Hearts;
+    let diamond = PokerSuit::Diamonds;
+
+    print_suit(heart); //虽然heart，diamond都属于枚举下的Hearts，Diamonds的实例，但是都属于PokerSuit枚举类型
+    print_suit(diamond);
+}
+
+fn print_suit(card: PokerSuit) {
+    // 需要在定义 enum PokerSuit 的上面添加上 #[derive(Debug)]，否则会报 card 没有实现 Debug
+    println!("{:?}",card);
+}
+```
+
+#### 为枚举值赋值
+**结构体方式**（值和枚举值分开不做绑定，通过struct连接）
+```rust
+enum PokerSuit {
+    Clubs,
+    Spades,
+    Diamonds,
+    Hearts,
+}
+
+struct PokerCard {
+    suit: PokerSuit,
+    value: u8
+}
+
+fn main() {
+   let c1 = PokerCard {
+       suit: PokerSuit::Clubs,
+       value: 1,
+   };
+   let c2 = PokerCard {
+       suit: PokerSuit::Diamonds,
+       value: 12,
+   };
+}
+```
+
+**枚举成员关联值**
+```rust
+enum PokerCard {
+    Clubs(u8),
+    Spades(u8),
+    Diamonds(u8),
+    Hearts(u8),
+}
+
+fn main() {
+   let c1 = PokerCard::Spades(5);
+   let c2 = PokerCard::Diamonds(13);
+}//直接将值与枚举成员关联
+```
+**任何类型的数据都可以放入枚举成员中**
+包括字符串，结构体,元组，甚至另一个枚举等复合类型
+```rust
+struct temp{
+    //一堆东西
+};
+
+enum test{
+    A(u8),
+    B(i32,i32,i32),
+    C(char),
+    D(temp),
+
+    StructTemp{x:i32,y:i32}, //结构体也可以进入枚举成为枚举成员，但是这种结构体属于枚举的变体即匿名结构体（必须用test::StructTemp调用），所以不需要struct关键词声明
+}
+```
+这些东西我们本来可以分开分别定义或声明（通过结构体）。但那样我们就不能当作一样类型传入函数中，而必须进行函数重载。这种使代码简便的能力正是枚举的意义之一==（同一化类型，聚化代码）==
+
+#### 枚举类型Option处理空值
+Option 枚举包含两个成员，一个成员表示含有值：Some(T), 另一个表示没有值：None
+```rust
+enum Option<T> {
+    Some(T), //T是泛型参数（类比stl库中的类型传入）
+    None,
+}
+```
+**=====================================================================**
+Option\<T> 枚举是如此有用以至于它被包含在了 prelude（prelude 属于 Rust 标准库，Rust 会将最常用的类型、函数等提前引入其中，省得我们再手动引入）之中，==你不需要将其显式引入作用域。另外，它的成员 Some 和 None 也是如此，无需使用 Option:: 前缀就可直接使用 Some 和 None。==
+
+```rust
+//采用some可不用提前声明Option的类型，可直接通过关联的值判断
+let some_number = Some(5);
+let some_string = Some("a string");
+//但None在使用前则必须声明该变量是哪个类型
+let absent_number: Option<i32> = None;
+```
+##### 采用option的none替代NULL的优越性
+因为Option<T> 和T并不是同一个类型，所以以下代码不能编译：
+```rust
+let x: i8 = 5;
+let y: Option<i8> = Some(5);
+
+let sum = x + y;//不能相加，Option<i8>和i8类型并不相同
+```
+所以要去使用这个option\<i8>，你必须去做一道显式转换才能得到i8类型，而这一步就会让编译器去检查这个值是否为空（因为当你使用option的时候，就是告诉编译器这些变量可能会有空的风险，你在担心这些变量是否为空），从而解决你期望某值不为空但却是空的问题。
+==那么如何从Option::some类型中调取需要的值呢？去查文档，应对不同情况==
+
+如果要处理none类型，我们一种简单应用是采用**match**流程控制结构处理枚举（c++的switch）
+```rust
+fn plus_one(x: Option<i32>) -> Option<i32> {
+    match x {
+        None => None,
+        Some(i) => Some(i + 1),
+    }
+}
+
+let five = Some(5);
+let six = plus_one(five);
+let none = plus_one(None);
 ```
