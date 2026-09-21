@@ -983,7 +983,9 @@ let sum = x + y;//不能相加，Option<i8>和i8类型并不相同
 所以要去使用这个option\<i8>，你必须去做一道显式转换才能得到i8类型，而这一步就会让编译器去检查这个值是否为空（因为当你使用option的时候，就是告诉编译器这些变量可能会有空的风险，你在担心这些变量是否为空），从而解决你期望某值不为空但却是空的问题。
 ==那么如何从Option::some类型中调取需要的值呢？去查文档，应对不同情况==
 
-如果要处理none类型，我们一种简单应用是采用**match**流程控制结构处理枚举（c++的switch）
+#### match结构控制
+
+如果要处理none类型，我们一种简单应用是采用**match**模式匹配结构处理枚举（c++的switch）
 ```rust
 fn plus_one(x: Option<i32>) -> Option<i32> {
     match x {
@@ -996,3 +998,92 @@ let five = Some(5);
 let six = plus_one(five);
 let none = plus_one(None);
 ```
+
+match结构主要作用就是用来匹配enum类型的成员来执行指令的（依旧参考switch）**表达式**（这是和switch最大的不同，也就是说match能返回值并绑定给变量）
+```rust
+    //作为表达式的例子（没声明x的enum）
+    let result = match x {
+    1 => "one",
+    2 => "two",
+    _ => "other",
+    };
+```
+==============================================================================================
+##### match的原则
+```rust
+enum Direction {
+    East,
+    West,
+    North,
+    South,
+}
+
+fn main() {
+    let dire = Direction::South;
+    match dire {
+        Direction::East => println!("East"),
+        Direction::North | Direction::South => {
+            println!("South or North");
+        },
+        _ => println!("West"),
+    };//此处是作为语句的用法
+
+}
+```
+想去匹配 dire 对应的枚举类型，因此在 match 中用三个匹配分支来完全覆盖枚举变量 Direction 的所有成员类型，有以下几点==值得注意==：
+* match的匹配尽可能枚举所有可能，==“_”==代表未列出的情况
+* match 的每一个分支都必须是一个表达式，且所有分支的表达式最终返回值的类型必须相同
+* 可以使用逻辑运算符连接表达式
+
+##### match通用写法：
+
+```rust
+match target {
+    模式1 => 表达式1,
+    模式2 => {
+        语句1;
+        语句2;
+        表达式2
+    },
+    _ => 表达式3
+}
+```
+
+##### match做模式绑定
+```rust
+enum Action {
+    Say(String),
+    MoveTo(i32, i32),
+    ChangeColorRGB(u16, u16, u16),
+    Structs{a:i32,b:i32}
+}
+
+fn main() {
+    let actions = [
+        Action::Say("Hello Rust".to_string()),
+        Action::MoveTo(1,2),
+        Action::ChangeColorRGB(255,255,0),
+        Action::Structs{a:12,b:21},
+    ];
+    for action in actions {
+        match action {
+            Action::Say(s) => {
+                println!("{}", s);
+            },
+            Action::MoveTo(x, y) => {
+                println!("point from (0, 0) move to ({}, {})", x, y);
+            },
+            Action::ChangeColorRGB(r, g, _) => {
+                println!("change color into '(r:{}, g:{}, b:0)', 'b' has been ignored",
+                    r, g,
+                );
+            }
+            Action::Structs{..} => println!("Structs，ignored\n"),
+            //Action::Structs{x:a,y:b} => println!("{} {}",x,y),
+            //Action::Structs{a,b} => println!("{} {}",a,b), 
+            //当结构体内部字段名称和解构的变量名一致可不写:来指明哪个字段赋给哪个变量
+        }
+    }
+}
+```
+我们发现，当枚举成员已经被声明实例化，我们就必须在match分支中用()内部填充变量来取出枚举成员关联的数据绑定给（）内的变量（变量可用_或者..替代，表示不做取出，但是格式必须和关联枚举成员时的变体格式一样）
