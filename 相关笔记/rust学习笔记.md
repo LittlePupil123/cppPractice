@@ -1087,3 +1087,213 @@ fn main() {
 }
 ```
 我们发现，当枚举成员已经被声明实例化，我们就必须在match分支中用()内部填充变量来取出枚举成员关联的数据绑定给（）内的变量（变量可用_或者..替代，表示不做取出，但是格式必须和关联枚举成员时的变体格式一样）
+
+### 数组（主要固定数组）
+#### 创建数组
+```rust
+fn main() {
+    let a = [1, 2, 3, 4, 5];//存储在栈上
+    //而对于vec动态数组存储在堆上
+
+    //当然也可以显式声明
+    let a: [i32; 5] = [1, 2, 3, 4, 5];
+    //特殊声明：
+    let a = [3; 5]; //a[5]={3,3,3,3,3}
+}
+```
+
+#### 访问数组
+```rust
+let a = [9, 8, 7, 6, 5];
+
+let first = a[0]; // 获取a数组第一个元素
+let second = a[1]; // 获取第二个元素
+let fault = a[5]; //直接报错崩溃退出，无法越界访问（好贴心！）
+```
+==rust只要检测到越界索引就会直接在该行中断然后报错（也就是这种panic（）发生在运行期间而不是编译期间）==
+
+#### 如果数组内部元素是复合类型：
+```rust
+let array = [String::from("rust is good!"); 8];
+
+println!("{:#?}", array);
+//报错！String是复合类型，不能这么声明变量，
+//因为String没有copy特征，无法
+//一份一份的复制字面值赋值，而智能一个一个声明：
+
+//正确声明：
+let array = [String::from("rust is good!"),String::from("rust is good!"),String::from("rust is good!")];
+//或者：let array: [String; 8] = std::array::from_fn(|_i| String::from("rust is good!"));
+
+println!("{:#?}", array);
+```
+=======================
+**访问数组索引本质是引用和解引用**如果数组内存的是有copy特征的值，那么绑定变量会复制出来给变量，如果是无copy特征的值，就不能这么绑定变量，因为数组不支持部分取值：
+```rust
+let arr = [String::from("a"), String::from("b")];
+
+let x = arr[0]; // ❌ 编译错误：cannot move out of index of `[String; 2]`
+```
+>原因如下：
+>Rust 不允许从数组/Vec 中直接部分移动元素，本质上是为了贯彻所有权法则和安全原则。因为绑定非 Copy 类型默认是移动，而 Rust 拒绝隐式 clone，如果允许直接移动数组元素，数组就会变成“部分可用、部分不可用”的非法状态。Rust 的解法是：要么编译报错，要么强制你用 Option<T>、remove 等显式手段，让“空位”成为类型系统里合法的、可追踪的状态。对于编译器能精确追踪字段的结构体，则允许部分移动。
+
+如果想正确使用：
+```rust
+//只想可读访问其数据
+let arr = [String::from("a"), String::from("b")];
+
+let x = &arr[0]; // ✅ x: &String，借用
+println!("{}", x); // a
+println!("{:?}", arr); // ✅ 原数组完好
+
+//-------------------------------------------------
+//如果一定要所有权移出来：
+//方法1，模式解构
+let arr = [String::from("a"), String::from("b")];
+
+let [a, b] = arr; // ✅ 把两个 String 移出来
+// arr 之后不能再整体使用（被移动了）
+println!("{} {}", a, b);
+
+//方法2：消费整个数组
+let arr = [String::from("a"), String::from("b")];
+let x = arr; // ✅ 整个数组移动给 x
+// arr 之后不能用
+
+//方法3：分别克隆出来
+let arr = [String::from("a"), String::from("b")];
+let x = arr[0].clone(); // ✅ 克隆一份，原数组不受影响
+println!("{:?}", arr); // ✅ 还能用
+
+//方法4：必须要部分取出，那就要声明移走后原数组位置是Option::none（take方法）
+// 如果你真的需要“移走一个留个空位”，用 Option
+let mut arr: [Option<String>; 2] = [
+    Some(String::from("a")),
+    Some(String::from("b")),
+];
+
+let x = arr[0].take(); // ✅ 移走内容，留下 None
+// arr[0] = None, arr[1] = Some("b")
+```
+
+#### 数组切片
+```rust
+let a: [i32; 5] = [1, 2, 3, 4, 5];
+
+let slice: &[i32] = &a[1..3];
+
+assert_eq!(slice, &[2, 3]);
+```
+
+-------
+## 流程控制解构
+
+### 分支结构（if，else）
+
+```rust
+fn main() {
+    let condition = true;
+    let number = if condition { //if，else可返回值，说明其属于表达式
+        5 //if，else返回的值必须得类型相同
+    } else {
+        6
+    };
+
+    println!("The value of number is: {}", number);
+}
+```
+
+可用else if一起组成复杂分支解构
+```rust
+fn main() {
+    let n = 6;
+
+    if n % 4 == 0 {
+        println!("number is divisible by 4");
+    } else if n % 3 == 0 {
+        println!("number is divisible by 3");
+    } else if n % 2 == 0 {
+        println!("number is divisible by 2");
+    } else {
+        println!("number is not divisible by 4, 3, or 2");
+    }
+}
+```
+
+### 循环结构（for，while，loop）
+#### for
+for可以和in联用获取集合内部的元素:
+```rust
+fn main() { //让i从1到5
+    for i in 1..=5 {
+        println!("{}", i);
+    }
+}
+
+//如果要访问的是其中元素的值那么就要对集合采取引用，
+//不然所有权可能转移
+//导致原集合失效
+for item in &container {
+  // ...
+}
+
+//如果要在循环内修改集合，则采用mut引用类型
+for item in &mut container {
+  // 此时item的类型是元素类型的引用，所以要修改就必须解引用
+  //*item+=2 //比如对当前的元素+=2，这时就是对item进行*解引用
+}
+
+```
+
+但是，对于实现了==实现了copy特征的数组==而言， for item in arr 并不会把 arr 的所有权转移，而是直接对其进行了拷贝，因此循环之后仍然可以使用 arr 。
+
+**一些for的特殊用法**
+```rust
+fn main() {
+    let a = [4, 3, 2, 1];
+    // `.iter()` 方法把 `a` 数组变成一个迭代器
+    for (i, v) in a.iter().enumerate() { //在循环中获取元素的索引和元素两部分，i是索引，v是元素
+        println!("第{}个元素是{}", i + 1, v);
+    }
+}
+
+for _ in 0..10 { //用_代替变量i占位，从而表示循环10次，不需要额外声明变量
+  // ...
+}
+```
+
+**用i迭代数组元素和i迭代元素索引(迭代器)的各自优劣**
+* i迭代索引：
+适合特殊规则下进行循环（只找数组的偶数项，反向遍历，访问相邻元素等）
+但是有数组越界风险，且运行过程中边界检测会持续进行造成略微性能下降
+* i迭代元素：
+不会数组越界，非常安全，并且对边界检测有所优化
+但是对于特殊循环有局限
+
+==当然rust也有**continue**和**break**==
+
+#### while
+条件循环，可以模拟for循环
+也可以被loop循环（无条件循环）模拟
+```rust
+fn main() {
+    let mut n = 0;
+
+    loop {
+        if n > 5 {
+            break
+        }
+        println!("{}", n);
+        n+=1;
+    }
+
+    println!("我出来了！");
+}
+```
+
+#### loop
+简单的表示无限循环，break退出。泛用性最高，能用来做任何循环（当然并不会简洁和方便，所以并不如while和for好用）
+
+如果想要正常使用loop，就必须做好退出条件，否则就会一直循环，直到ctrl+c退出终端
+
+特殊性：break，loop都是表达式，可返回值
