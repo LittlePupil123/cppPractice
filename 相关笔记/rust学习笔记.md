@@ -1088,6 +1088,8 @@ fn main() {
 ```
 我们发现，当枚举成员已经被声明实例化，我们就必须在match分支中用()内部填充变量来取出枚举成员关联的数据绑定给（）内的变量（变量可用_或者..替代，表示不做取出，但是格式必须和关联枚举成员时的变体格式一样）
 
+**如果我们不希望match后发生所有权的转移，可以采用&的方式进入match来获取值，但不会所有权转移**
+
 ### 数组（主要固定数组）
 #### 创建数组
 ```rust
@@ -1299,3 +1301,331 @@ fn main() {
 特殊性：break，loop都是表达式，可返回值
 
 ## 模式匹配
+在前文所讲的**match，let**正是模式匹配语句之一，现在我们再讲其他方式
+### if let
+如果你只对枚举成员中的一个进行处理，那么就可以采用if let变量进行模式匹配，而不需要用match写一大堆
+```rust
+if let Some(v) = Some(3) { //将Option::Some内部的3绑定给v
+    println!("three");
+}
+
+//如果你要检测v是否是3：
+let v=Some(3u8);
+if let Some(3) = v { //将Option::Some内部的3绑定给v
+    println!("three");
+}
+//如果你用match，就得这么写
+    let v = Some(3u8);
+    match v {
+        Some(3) => println!("three"),
+        _ => (),
+    }
+```
+
+### matches!
+判断一个值是否属于某种模式（枚举成员，序列，ref，mut等）
+```rust
+enum MyEnum {
+    Foo,
+    Bar
+}
+
+fn main() {
+    let v = vec![MyEnum::Foo,MyEnum::Bar,MyEnum::Foo];
+
+    //过滤数组，只保留Foo元素：
+    v.iter().filter(|x| matches!(x, MyEnum::Foo));//MyEnum::Foo是一种模式
+    //v.iter().filter(|x| x == MyEnum::Foo); 不能这么写，x无法和模式比较
+
+    //以下为其他的样例
+    let foo = 'f';
+    assert!(matches!(foo, 'A'..='Z' | 'a'..='z'));
+
+    let bar = Some(4);
+    assert!(matches!(bar, Some(x) if x > 2));
+}
+```
+
+### 变量遮蔽
+无论是 match 还是 if let，这里都是一个新的代码块，而且这里的绑定相当于新变量，如果你使用同名变量，会发生变量遮蔽：
+
+```rust
+fn main() {
+   let age = Some(30);
+   println!("在匹配前，age是{:?}",age);
+   if let Some(age) = age {
+       println!("匹配出来的age是{}",age);
+   }
+
+   println!("在匹配后，age是{:?}",age);
+}
+
+/*输出
+在匹配前，age是Some(30)
+匹配出来的age是30
+在匹配后，age是Some(30)
+*/
+```
+发现第二次输出和第三次输出的类型差别，说明**变量遮蔽范围是从if let处age被声明到if let{}作用域结束**
+
+### 模式适用场景
+#### 模式
+模式是 Rust 中的特殊语法，它用来匹配类型中的结构和数据，它往往和 match 表达式联用，以实现强大的模式匹配能力。模式一般由以下内容组合而成：
+1. 字面值
+2. 解构的数组、枚举、结构体或者元组
+3. 变量
+4. 通配符
+5. 占位符
+模式是 Rust 描述“数据形状”的语法，它把“判断结构 + 解构数据 + 绑定变量”三件事合并成一个动作，从而简化了各种操作和逻辑。它出现在 let、match、if let、while let、函数参数、for 循环等所有“值和变量对应”的地方。**模式匹配本质就是判断结构 + 解构数据 + 绑定变量**,这也解释了为什么rust解构变量用let，本质就是做了模式匹配
+而枚举在模式匹配下，就相当于定义了模式的结构和类型，从而让枚举变得简洁好用。换句话说**rust的模式语法是让枚举好用轻松的基础**
+
+#### 可能用到模式的地方
+##### match
+```rust
+match VALUE {
+    PATTERN => EXPRESSION,
+    PATTERN => EXPRESSION,
+    _ => EXPRESSION,
+}
+```
+match 的每个分支就是一个模式，因为 match 匹配是穷尽式的，因此我们往往需要一个特殊的模式 _，来匹配剩余的所有情况
+##### if let
+if let就是对一个模式进行模式匹配，
+
+##### while let
+一个与 if let 类似的结构是 while let 条件循环，**它允许只要模式匹配就一直进行 while 循环**。
+
+```rust
+// Vec是动态数组
+let mut stack = Vec::new();
+
+// 向数组尾部插入元素
+stack.push(1);
+stack.push(2);
+stack.push(3);
+
+// stack.pop从数组尾部弹出元素
+while let Some(top) = stack.pop() {
+    println!("{}", top);
+}
+```
+
+##### for
+```rust
+let v = vec!['a', 'b', 'c'];
+
+for (index, value) in v.iter().enumerate() {
+    println!("{} is at index {}", value, index);
+}
+```
+这里使用 enumerate 方法产生一个迭代器，该迭代器每次迭代会返回一个 (索引，值) 形式的元组，然后用 (index,value) 来匹配
+
+##### let
+let语法就是在做模式匹配：let 模式=表达式
+代表的就是对于左边的模式进行标识，并按照标识的模式进行绑定。
+```rust
+let x=5;//x就是一种模式，代表将右边的5按照只绑定一个变量的方式绑定给x
+let (x,y)=(1,2)//识别模式为分解元组，将元组按照顺序拆分，分别绑定给x，y
+```
+
+##### 函数参数
+```rust
+fn print_coordinates(&(x, y): &(i32, i32)) {
+    println!("Current location: ({}, {})", x, y);
+}
+
+fn main() {
+    let point = (3, 5);
+    print_coordinates(&point);
+}
+```
+&(3, 5) 会匹配模式 &(x, y)，因此 x 得到了 3，y 得到了 5。
+
+##### let和if let的区别
+```rust
+let Some(x) = some_option_value;
+```
+这行代码会报错，因为option==可能==是None，这时就无法进行模式匹配了
+但是：
+```rust
+if let Some(x) = some_option_value {
+    println!("{}", x);
+}
+```
+这行代码不会，因为if let代表的是“可能是这种模式，如果是，那么匹配”。换句话说，是识别匹配其中一个分支，而不管其他模式，（相当于_在match）
+
+##### let else
+使用 let-else 匹配，即可使 let 变为可驳模式。它可以使用 else 分支来处理模式不匹配的情况，但是 else 分支中必须用发散的代码块处理（例如：break、return、panic）
+
+
+```rust
+use std::str::FromStr;
+
+fn get_count_item(s: &str) -> (u64, &str) {
+    let mut it = s.split(' ');
+    let (Some(count_str), Some(item)) = (it.next(), it.next()) else {
+        panic!("Can't segment count item pair: '{s}'");
+    };
+    let Ok(count) = u64::from_str(count_str) else {
+        panic!("Can't parse integer: '{count_str}'");
+    };
+    // error: `else` clause of `let...else` does not diverge
+    // let Ok(count) = u64::from_str(count_str) else { 0 };
+    (count, item)
+}
+
+fn main() {
+    assert_eq!(get_count_item("3 chairs"), (3, "chairs"));
+}
+```
+
+与 match 和 if let 相比，let-else 的一个显著特点在于其解包成功时所创建的变量具有更广的作用域。在 let-else 语句中，成功匹配后的变量不再仅限于特定分支内使用，而是上一层分支
+
+## 方法
+在rust中，方法并不是用class将数据和操作绑定一起，而是与结构体，枚举，特征一起使用，通过impl把方法（操作）绑定给结构体，枚举，特征等
+
+### 定义方法
+==impl==定义方法
+```rust
+struct Circle {
+    x: f64,
+    y: f64,
+    radius: f64,
+}
+
+impl Circle {
+    // new是Circle的关联函数，因为它的第一个参数不是self，且new并不是关键字
+    // 这种方法往往用于初始化当前结构体的实例
+    fn new(x: f64, y: f64, radius: f64) -> Circle {
+        Circle {
+            x: x,
+            y: y,
+            radius: radius,
+        }
+    }
+
+    // Circle的方法，&self表示借用当前的Circle结构体
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * (self.radius * self.radius)
+    }
+}
+```
+补充概念：rust中的关联函数和其他语言中的静态方法是差不多的东西。
+==调用关联函数：Circle::new(_._);==
+
+### self，&self和&mut self
+```rust
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+impl Rectangle {
+    fn area(&self) -> u32 {
+        self.width * self.height
+    }
+}
+
+fn main() {
+    let rect1 = Rectangle { width: 30, height: 50 };
+
+    println!(
+        "The area of the rectangle is {} square pixels.",
+        rect1.area()
+    );
+}
+```
+
+
+在 area 的签名中，我们使用 &self 替代 rectangle: &Rectangle，**&self 其实是 self: &Self 的简写（注意大小写）**。在一个 impl 块内，**Self** 指代被实现方法的结构体**类型**，**self** 指代此类型的**实例**，换句话说，self 指代的是 Rectangle 结构体实例，这样的写法会让我们的代码简洁很多，而且非常便于理解：我们为哪个结构体实现方法，那么 self 就是指代哪个结构体的实例。
+==当我们用self.method()时，本质是用了一个语法糖method(&self)==
+**注意，self依旧存在所有权:**
+* self占位，表示rectangle
+* &self占位表示该方法对Rectangle实例的不可变借用（const方法成员）
+* &mut self占位表示可变借用（一般的方法成员）
+
+### 方法名和结构体字段名可相同
+当你object.method()时，根据()编译器就知道调用的是方法，而不是字段
+**这种特性一般用于实现访问器**(比如get()方法，在类外调用该方法获取当前实例某个字段的数据)
+```rust
+mod my {//把mod理解冲class+namespace的结合就行，负责封装Rectangle及其方法
+    pub struct Rectangle {
+        width: u32,
+        pub height: u32,
+    }
+
+    impl Rectangle {
+        pub fn new(width: u32, height: u32) -> Self {
+            Rectangle { width, height }
+        }
+        pub fn width(&self) -> u32 {
+            return self.width;
+        }
+        pub fn height(&self) -> u32 {
+            return self.height;
+        }
+    }
+}
+
+fn main() {
+    let rect1 = my::Rectangle::new(30, 50);
+
+    println!("{}", rect1.width()); // OK
+    println!("{}", rect1.height()); // OK
+    // println!("{}", rect1.width); // Error - the visibility of field defaults to private
+    println!("{}", rect1.height); // OK
+}
+```
+代码中由于struct属于private，于是通过width等与字段同名的**公开（pub）**方法获取数据
+
+### 关联函数
+在impl{}中不在形式参数声明中包含self即可。由于没有self，不能通过实例的方法的方式调用，所以属于函数。但在impl中和结构体等类型联系紧密，所以叫做关联函数
+调用方法：type::function()
+==总而言之，'::'符号用于访问impl或者mod模块命名空间等一类有独立性的作用域中的成员==
+
+### impl其他功能与特性
+impl可以为枚举，特征（trait）实现方法
+```rust
+#![allow(unused)]
+enum Message {
+    Quit,
+    Move { x: i32, y: i32 },
+    Write(String),
+    ChangeColor(i32, i32, i32),
+}
+
+impl Message {
+    fn call(&self) {
+        // 在这里定义方法体
+    }
+}
+
+fn main() {
+    let m = Message::Write(String::from("hello"));
+    m.call();
+}
+```
+impl可以使用多次来分开声明同一个类型的多个方法：
+```rust
+# #[derive(Debug)]
+# struct Rectangle {
+#     width: u32,
+#     height: u32,
+# }
+#
+impl Rectangle {
+    fn area(&self) -> u32 {
+        self.width * self.height
+    }
+}
+
+impl Rectangle {
+    fn can_hold(&self, other: &Rectangle) -> bool {
+        self.width > other.width && self.height > other.height
+    }
+}
+```
+当然这种功能在很多时候很没必要
+
+## 泛型
