@@ -802,7 +802,7 @@ impl SomeTrait for AlwaysEqual {
 }
 ```
 #### debug打印结构体信息
-1. **采用#[derive(Debug)]提前标记代码为debug状态，然后可使用{:?}或{:#?}替代{}来打印结构体**
+1. **采用#[derive(Debug)]提前在需要打印的对应结构体的上一行使用来标记代码为debug状态，然后可使用{:?}或{:#?}替代{}来打印结构体**
 ```rust
 #[derive(Debug)]
 struct Rectangle {
@@ -1121,7 +1121,7 @@ let array = [String::from("rust is good!"); 8];
 println!("{:#?}", array);
 //报错！String是复合类型，不能这么声明变量，
 //因为String没有copy特征，无法
-//一份一份的复制字面值赋值，而智能一个一个声明：
+//一份一份的复制字面值赋值，而只能一个一个声明：
 
 //正确声明：
 let array = [String::from("rust is good!"),String::from("rust is good!"),String::from("rust is good!")];
@@ -1629,3 +1629,618 @@ impl Rectangle {
 当然这种功能在很多时候很没必要
 
 ## 泛型
+通过规定一个字符来表示多种相同或类似的关键词（比如类型i8，i32，i64，u8之类）
+### 声明规定泛型参数
+```rust
+fn largest<T>(list: &[T]) -> T {
+```
+我们可以这样理解这个函数定义：函数 largest 有泛型类型 T，它有个参数 list，其元素是类型为 T 的数组切片，最后，该函数返回值的类型也是 T
+
+**但是一般来说我们还需要对规定的泛型再规定泛型中哪些符合特征的类型才能调用该函数**
+
+以下代码是==错误==的
+```rust
+fn largest<T>(list: &[T]) -> T {
+    let mut largest = list[0];
+
+    for &item in list.iter() {
+        if item > largest {
+            largest = item;
+        }
+    }
+
+    largest
+}
+
+fn main() {
+    let number_list = vec![34, 50, 25, 100, 65];
+
+    let result = largest(&number_list);
+    println!("The largest number is {}", result);
+
+    let char_list = vec!['y', 'm', 'a', 'q'];
+
+    let result = largest(&char_list);
+    println!("The largest char is {}", result);
+}
+```
+会在“ if item > largest ”这行出错，原因是不是所有的类型都能比大小。
+所以需要给类型做一个类型限制：使用==std::cmp::PartialOrd== 特征（Trait）来限定泛型中符合该特征（能进行比较）的类型才可调用该函数
+```rust
+fn largest<T:std::cmp::PartialOrd>(list: &[T]) -> T 
+```
+
+### 显式指定泛型的类型参数
+```rust
+use std::fmt::Display;
+
+fn create_and_print<T>() where T: From<i32> + Display {
+    let a: T = 100.into(); // 创建了类型为 T 的变量 a，它的初始值由 100 转换而来
+    println!("a is: {}", a);
+}
+
+fn main() {
+    create_and_print();
+}
+```
+在这段main函数中调用方法时，并未指定T的类型，于是编译器无法得知声明的变量应当是哪个类型，从而无法转换
+所以调用该方法时需要显式表明T的类型
+```rust
+fn main() {
+    create_and_print::<i64>();
+}
+```
+
+### 结构体中使用泛型
+```rust
+struct Point<T> {
+    x: T,
+    y: T,
+}
+
+fn main() {
+    let integer = Point { x: 5, y: 10 };
+    let float = Point { x: 1.0, y: 4.0 };
+}
+```
+创建了一个Point结构体，能够定义任何类型的坐标值的坐标点
+注意：
+* 提前声明：和函数类似，需要提前声明该结构体的泛型字符
+* 声明结构体实例时必须保证结构体内字段绑定的类型是一致的
+如果不符合第二点，会报错，比如：
+```rust
+fn main() {
+    let error= Point{x:5,y:1.0};
+}
+```
+这很好理解，因为x，y声明的类型都是T，但是我实际绑定时二者的类型却不一致
+所以希望能绑定不同类型时，我们需要声明两个泛型参数
+```rust
+struct Point<T,U> {
+    x: T,
+    y: U,
+}
+fn main() {
+    let p = Point{x: 1, y :1.1};
+}
+```
+
+### 枚举中使用泛型
+比如Option枚举
+```rust
+enum Option<T> {
+    Some(T),
+    None,
+}
+```
+以及Result枚举
+```rust
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+```
+二者同样用于对于函数返回值的处理，但是有所不同
+Result枚举关注值是否正确。
+如果函数正常运行，则可以加入Ok模式，表明值正确返回，而如果函数异常，则返回Err模式，表明函数的错误返回值
+
+### 方法中使用泛型
+```rust
+struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T> Point<T> {
+    fn x(&self) -> &T {
+        &self.x
+    }
+}
+
+fn main() {
+    let p = Point { x: 5, y: 10 };
+
+    println!("p.x = {}", p.x());
+}
+```
+使用泛型参数前，依然需要提前声明：impl\<T>，只有提前声明了，我们才能在Point\<T>中使用它，这样 Rust 就知道 Point 的尖括号中的类型是泛型而不是具体类型。需要注意的是，这里的 Point\<T> 不再是泛型声明，而是一个完整的结构体类型，因为我们定义的结构体就是 Point\<T> 而不再是 Point。==(类的重载多态类似，可能Point和Point\<T>属于两种结构体)==
+
+我们同样可以在方法中定义额外的泛型参数，和函数一样。（因为方法是某种特殊的函数而已）
+
+#### 为泛型中的某些类型实现特定的方法
+```rust
+impl Point<f32> {
+    fn distance_from_origin(&self) -> f32 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
+    }
+}
+```
+这串代码就是为Point\<f32>实现了特定的方法。只有Point\<f32>实例才可调用
+
+### const泛型
+我们不仅能用泛型表示类型，还能表示值
+比如以下的报错代码：
+```rust
+fn display_array(arr: [i32; 3]) {
+    println!("{:?}", arr);
+}
+fn main() {
+    let arr: [i32; 3] = [1, 2, 3];
+    display_array(arr);
+
+    let arr: [i32; 2] = [1, 2];
+    display_array(arr);
+}
+```
+报错的原因是display_array()方法是针对[i32;3]类型的数组，而不是[i32;2]类型
+所以我们使用数组切片类型当作形式参数声明，然后传入不可变引用数组即可
+```rust
+fn display_array(arr: &[i32]) {
+    println!("{:?}", arr);
+}
+fn main() {
+    let arr: [i32; 3] = [1, 2, 3];
+    display_array(&arr);
+
+    let arr: [i32; 2] = [1, 2];
+    display_array(&arr);
+}
+```
+我们也可以用泛型参数将i32改为其他任何类型的数组
+```rust
+fn display_array<T: std::fmt::Debug>(arr: &[T]) {
+    println!("{:?}", arr);
+}
+fn main() {
+    let arr: [i32; 3] = [1, 2, 3];
+    display_array(&arr);
+
+    let arr: [i32; 2] = [1, 2];
+    display_array(&arr);
+}
+```
+std::fmt::Debug特征是指可以用{:?}格式化输出打印的特征
+==但是对于某些不适宜或不能用引用的场景，我们就必须运用一个新的概念解决==
+**也就是const泛型**，代表各种数值
+比如处理数组长度的问题时：
+```rust
+fn display_array<T: std::fmt::Debug, const N: usize>(arr: [T; N]) {
+    println!("{:?}", arr);
+}
+fn main() {
+    let arr: [i32; 3] = [1, 2, 3];
+    display_array(arr);
+
+    let arr: [i32; 2] = [1, 2];
+    display_array(arr);
+}
+```
+T就是一个类型泛型参数，而N就是值的泛型参数，用来替代数组长度。
+```rust
+const N:usize
+```
+这里面N是const泛型，而它基于的值的类型是usize
+
+### const泛型表达式
+暂时略
+### const fn
+在编译期执行的函数，并求出结果，使运行期代码运行更流畅，更简洁，高效，灵活。比如定义数组的长度，计算常量值等
+
+**基本用法：**在声明函数前加一个const
+```rust
+const fn add(a: usize, b: usize) -> usize
+```
+
+**const fn的限制**
+无论在编译时还是运行时调用 const fn，它们的结果总是相同，即使多次调用也是如此。唯一的例外是，如果你在极端情况下进行复杂的浮点操作，你可能会得到（非常轻微的）不同结果。因此，不建议使 数组长度 (arr.len()) 和 Enum判别式 依赖于浮点计算。
+
+### 泛型的性能
+运行和性能上零开销，但由于泛型是在编译期为编译时确定的不同的类型自动创建对应的代码（单态化），所以损失了编译速度和最终生成文件大小。
+
+## 特征（trait）
+可以类比为“接口”
+特征定义了一组可以被共享的行为，只要实现了该特征，你就能使用这组行为
+
+### 定义特征
+如果不同的类型具有相同的行为，那么我们就可以定义一个特征，然后为这些类型实现该特征。定义特征是把一些**方法**组合在一起，目的是定义一个实现某些目标所必需的行为的集合。
+```rust
+pub trait Name{
+    fn Function(&self)->String;
+}
+```
+注意，这里末尾是;,说明和接口类似，特征只负责接口的函数签名，但是不负责具体的实现方法。具体的实现是放在特定需要被绑定的类型中去声明实现的。
+
+### 为类型声明特征的实现
+```rust
+pub trait Summary {
+    fn summarize(&self) -> String;
+}
+pub struct Post {
+    pub title: String, // 标题
+    pub author: String, // 作者
+    pub content: String, // 内容
+}
+
+impl Summary for Post {
+    fn summarize(&self) -> String {
+        format!("文章{}, 作者是{}", self.title, self.author)
+    }
+}
+
+pub struct Weibo {
+    pub username: String,
+    pub content: String
+}
+
+impl Summary for Weibo {
+    fn summarize(&self) -> String {
+        format!("{}发表了微博{}", self.username, self.content)
+    }
+}
+```
+我们同样通过impl指令来为类型绑定特征。
+```rust
+impl trait for Type{fn Function}
+```
+
+### 调用特征带的方法
+```rust
+fn main() {
+    let post = Post{title: "Rust语言简介".to_string(),author: "Sunface".to_string(), content: "Rust棒极了!".to_string()};
+    let weibo = Weibo{username: "sunface".to_string(),content: "好像微博没Tweet好用".to_string()};
+
+    println!("{}",post.summarize());
+    println!("{}",weibo.summarize());
+}
+```
+调用特征的方法就和直接调用方法没区别
+
+当然，trait中==也能放关联函数和常量。也和一般的相关调用方法一样==
+
+### 孤儿规则（特征定义与实现的位置）
+**如果你想要为类型 A 实现特征 T，那么 A 或者 T 至少有一个是在当前作用域中定义的**
+例如我们可以为上面的 Post 类型实现标准库中的 Display 特征，这是因为 Post 类型定义在当前的作用域中。同时，我们也可以在当前包中为 String 类型实现 Summary 特征，因为 Summary 定义在当前作用域中。
+
+但是你无法在当前作用域中，为 String 类型实现 Display 特征，因为它们俩都定义在标准库中，其定义所在的位置都不在当前作用域
+
+这么做的目的是为了防止人们互相破坏对方的代码。
+
+### 默认实现
+我们可以在trait的函数标签内部直接声明一个函数。这样在别人绑定标签后可以直接使用这个函数，或者重写。
+```rust
+pub trait Summary {
+    fn summarize(&self) -> String {
+        String::from("(Read more...)")
+    }
+}
+```
+直接调用或者重写：
+```rust
+impl Summary for Post {}
+
+impl Summary for Weibo {
+    fn summarize(&self) -> String {
+        format!("{}发表了微博{}", self.username, self.content)
+    }
+}
+
+println!("{}",post.summarize());
+println!("{}",weibo.summarize());
+```
+输出结果：
+```
+(Read more...)
+sunface发表了微博好像微博没Tweet好用
+```
+
+**默认实现允许调用相同特征中的其他方法，哪怕这些方法没有默认实现。如此，特征可以提供很多有用的功能而只需要实现指定的一小部分内容。** 例如，我们可以定义 Summary 特征，使其具有一个需要实现的 summarize_author 方法，然后定义一个 summarize 方法，此方法的默认实现调用 summarize_author 方法
+把他类比成一个相对独立的板块好了。可以调用内部自己有的函数
+```rust
+pub trait Summary {
+    fn summarize_author(&self) -> String;
+
+    fn summarize(&self) -> String {
+        format!("(Read more from {}...)", self.summarize_author())
+    }
+}
+```
+为了使用 Summary，只需要实现 summarize_author 方法即可：
+```rust
+impl Summary for Weibo {
+    fn summarize_author(&self) -> String {
+        format!("@{}", self.username)
+    }
+}
+println!("1 new weibo: {}", weibo.summarize());
+```
+这样，在weibo引用summarize()方法时会先调用Summarize方法默认实现，进而调用在Weibo中实现的summarize_author方法
+
+### 特征当作函数参数
+```rust
+pub fn notify(item: &impl Summary) {
+    println!("Breaking news! {}", item.summarize());
+}
+```
+在这里，item的类型指定，是impl Summary的引用类型，impl Summary代表的就是绑定了Summary特征的类型
+所以item在这里就能使Post，Weibo类型，而不是i32等其他未实现该特征的类型。同时在函数内部能直接调用实现的方法。
+
+### 特征约束（trait bound）
+实际上impl Trait是一种语法糖，原本是这样表达：
+```rust
+pub fn notify<T: Summary>(item: &T) {
+    println!("Breaking news! {}", item.summarize());
+}
+```
+也就是之前提到泛型声明时规定的实现了Summary特征的泛型的引用
+**这种形如T:Summary被称为特征约束**
+采用特征约束的声明方式的优势是带来了更大灵活性和语法表现能力。比如我要传入两个实现了Summary特征的参数
+```rust
+pub fn notify(item1: &impl Summary, item2: &impl Summary) {} //按之前的方法是这样。
+```
+但如果我们希望这两个参数是同一类型呢？
+```rust
+pub fn notify<T: Summary>(item1: &T, item2: &T) {}
+```
+这样保证了item1和item2必须是同一个类型，且类型必须实现Summary特征
+
+### 多重约束
+除了单个约束条件，我们还可以指定多个约束条件，例如除了让参数实现 Summary 特征外，还可以让参数实现 Display 特征以控制它的格式化输出：
+```rust
+pub fn notify(item: &(impl Summary + Display)) {}
+```
+也可以用标准特征约束的形式声明
+```rust
+pub fn notify<T: Summary + Display>(item: &T) {}
+```
+
+#### Where 约束
+当特征约束变得多时签名会变得很复杂，所以我们课以采用where来约束泛型
+```rust
+fn some_function<T, U>(t: &T, u: &U) -> i32
+    where T: Display + Clone,
+          U: Clone + Debug
+{}
+```
+
+### 使用特征约束有条件地实现方法或特征
+采用特征约束，我们可以指定某些实现了特定特征的类型绑定新方法：
+```rust
+use std::fmt::Display;
+
+struct Pair<T> {
+    x: T,
+    y: T,
+}
+
+impl<T> Pair<T> {
+    fn new(x: T, y: T) -> Self {
+        Self {
+            x,
+            y,
+        }
+    }
+}
+
+impl<T: Display + PartialOrd> Pair<T> {
+    fn cmp_display(&self) {
+        if self.x >= self.y {
+            println!("The largest member is x = {}", self.x);
+        } else {
+            println!("The largest member is y = {}", self.y);
+        }
+    }
+}
+```
+这样，对于实现了Display+Partial的特征的pair\<T>类型才能使用cmp_display()方法。
+
+**也可以有条件的实现特征**
+比如为任何实现了Display特征的类型实现ToString特征
+```rust
+impl<T: Display> ToString for T {
+    // --snip--
+}
+```
+这段代码，先限定泛型参数T要首先实现了Display，然后再将ToString特征绑定给符合这样条件的T参数
+
+### 函数返回中的impl Trait
+可以通过 impl Trait 来说明一个函数返回了**一个类型**，该类型实现了某个特征（就和作为参数声明的类型的含义时一致的）
+```rust
+fn returns_summarizable() -> impl Summary {
+    Weibo {
+        username: String::from("sunface"),
+        content: String::from(
+            "m1 max太厉害了，电脑再也不会卡",
+        )
+    }
+}
+```
+这样，我们在面对某些真实类型非常复杂的的情况下，不知道该怎么声明时，就能用impl Trait的方式简单返回。
+但是这种返回值方式有一个巨大局限，那就是这个函数只能返回一种具体的类型。
+==以下的代码是错的，无法通过编译==
+```rust
+fn returns_summarizable(switch: bool) -> impl Summary {
+    if switch {
+        Post {
+            title: String::from(
+                "Penguins win the Stanley Cup Championship!",
+            ),
+            author: String::from("Iceburgh"),
+            content: String::from(
+                "The Pittsburgh Penguins once again are the best \
+                 hockey team in the NHL.",
+            ),
+        }
+    } else {
+        Weibo {
+            username: String::from("horse_ebooks"),
+            content: String::from(
+                "of course, as you probably already know, people",
+            ),
+        }
+    }
+}
+```
+==因为它返回两种具体的类型了==
+如果要实现返回不同类型，要用到下一节的特征对象概念
+
+### 通过derive派生特征
+在本书中，形如 #[derive(Debug)] 的代码已经出现了很多次，这种是一种特征派生语法，被 derive 标记的对象会自动实现对应的默认特征代码，继承相应的功能。
+例如 Debug 特征，它有一套自动实现的默认代码，当你给一个结构体标记后，就可以使用 println!("{:?}", s) 的形式打印该结构体的对象。
+再如 Copy 特征，它也有一套自动实现的默认代码，当标记到一个类型上时，可以让这个类型自动实现 Copy 特征，进而可以调用 copy 方法，进行自我复制。
+总之，derive 派生出来的是 Rust 默认给我们提供的特征，在开发过程中极大的简化了自己手动实现相应特征的需求，当然，如果你有特殊的需求，还可以自己手动重写该实现。
+详细的 derive 列表参见附录-派生特征。
+
+### 调用方法需要引入特征
+在一些场景中，使用 as 关键字做类型转换会有比较大的限制，因为你想要在类型转换上拥有完全的控制，例如处理转换错误，那么你将需要 TryInto：
+```rust
+use std::convert::TryInto;//将TryInto特征引入到当前作用域
+
+fn main() {
+  let a: i32 = 10;
+  let b: u16 = 100;
+
+  let b_ = b.try_into()
+            .unwrap();
+
+  if a < b_ {
+    println!("Ten is less than one hundred.");
+  }
+}
+```
+上面代码中引入了 std::convert::TryInto 特征，但是却没有使用它，可能有些同学会为此困惑，主要原因在于**如果你要使用一个特征的方法，那么你需要将该特征引入当前的作用域中** ，我们在上面用到了 try_into 方法，因此需要引入对应的特征。
+
+但是 Rust 又提供了一个非常便利的办法，即把最常用的标准库中的特征通过 std::prelude 模块提前引入到当前作用域中，其中包括了 std::convert::TryInto，你可以尝试删除第一行的代码 use ...的那行，也不会报错。
+
+## 特征对象
+由于我们如果需要制作一个函数能够处理不同的类型，并且每个类型在该函数中处理不同（但流程类似），调用相同的方法，且我们无法在编译时就确定类型的种类多少，或新增类型。那么就需要用到特征对象（在c++中会选择使用类和继承。使用基类并创建这个方法，然后其他类型都由该基类派生。但是rust没有继承）
+
+### 定义特征对象
+先定义一个特征
+```rust
+pub trait Draw {
+    fn draw(&self);
+}
+```
+只要组件实现了 Draw 特征，就可以调用 draw 方法来进行渲染。假设有一个 Button 和 SelectBox 组件实现了 Draw 特征：
+```rust
+pub struct Button {
+    pub width: u32,
+    pub height: u32,
+    pub label: String,
+}
+
+impl Draw for Button {
+    fn draw(&self) {
+        // 绘制按钮的代码
+    }
+}
+
+struct SelectBox {
+    width: u32,
+    height: u32,
+    options: Vec<String>,
+}
+
+impl Draw for SelectBox {
+    fn draw(&self) {
+        // 绘制SelectBox的代码
+    }
+}
+
+```
+此时，还需要一个动态数组来存储这些 UI 对象，方便调用来执行对应的draw：
+```rust
+pub struct Screen {
+    pub components: Vec<?>,
+}
+```
+这里的？代表的是我们目前的代码是无法判断采用什么类型。但是由于SelectBox和Button都实现了Draw特征，所以我们能考虑将实现了Draw特征的实例当作类型加入components数组中
+
+===========
+**特征对象指向实现了 Draw 特征的类型的实例，也就是指向了 Button 或者 SelectBox 的实例，这种映射关系是存储在一张表中，可以在运行时通过特征对象找到具体调用的类型方法。**
+可以通过 & 引用或者 Box\<T> 智能指针的方式来创建特征对象。
+>Box\<T>是声明了一种智能指针，当作一种引用，但是它包裹（指向）的值是在堆上生成的
+```rust
+trait Draw {
+    fn draw(&self) -> String;
+}
+
+impl Draw for u8 {
+    fn draw(&self) -> String {
+        format!("u8: {}", *self)
+    }
+}
+
+impl Draw for f64 {
+    fn draw(&self) -> String {
+        format!("f64: {}", *self)
+    }
+}
+
+// 若 T 实现了 Draw 特征， 则调用该函数时传入的 Box<T> 可以被隐式转换成函数参数签名中的 Box<dyn Draw>
+fn draw1(x: Box<dyn Draw>) {
+    // 由于实现了 Deref 特征，Box 智能指针会自动解引用为它所包裹的值，然后调用该值对应的类型上定义的 `draw` 方法
+    x.draw();
+}
+
+fn draw2(x: &dyn Draw) {
+    x.draw();
+}
+
+fn main() {
+    let x = 1.1f64;
+    // do_something(&x);
+    let y = 8u8;
+
+    // x 和 y 的类型 T 都实现了 `Draw` 特征，因为 Box<T> 可以在函数调用时隐式地被转换为特征对象 Box<dyn Draw> 
+    // 基于 x 的值创建一个 Box<f64> 类型的智能指针，指针指向的数据被放置在了堆上
+    draw1(Box::new(x));
+    // 基于 y 的值创建一个 Box<u8> 类型的智能指针
+    draw1(Box::new(y));
+    draw2(&x);
+    draw2(&y);
+}
+```
+这段代码，我们发现，dyn Trait正是代表的是==实现了指定特征的实例==的类型
+
+* ==draw1== 函数的参数是 ==Box\<dyn Draw>== 形式的特征对象，该特征对象是通过 Box::new(x) 的方式创建的
+* draw2 函数的参数是 &dyn Draw 形式的特征对象，该特征对象是通过 &x 的方式创建的
+* dyn 关键字只用在特征对象的类型声明上，在创建时无需使用 dyn
+因此，可以使用特征对象来代表泛型或具体的类型。
+接下来我们创建一个特征Draw对象类型的数组来加入那些组件对象
+```rust
+pub struct Screen {
+    pub components: Vec<Box<dyn Draw> >,
+}
+```
+>**特征对象类型Box\<dyn Draw>和T:Draw的区别**
+>如果我们的components是Vec\<T:Draw>,那么如果这个数组一旦存入了一个组件类型（比如button），那么这个数组就只能存同一个组件类型（也就是只能存button）。==当我们需要的泛型只需要单一类型时，我们就可以用特征约束，而如果要求需要多种实现了相同特征的类型，那么我们就用特征对象类型==
+
+使用特征对象和 Rust 类型系统来进行类似鸭子类型操作的优势是，无需在运行时检查一个值是否实现了特定方法或者担心在调用时因为值没有实现方法而产生错误。如果值没有实现特征对象所需的特征， 那么 Rust 根本就不会编译这些代码
+
+==注意 dyn 不能单独作为特征对象的定义，例如下面的代码编译器会报错，原因是特征对象可以是任意实现了某个特征的类型，编译器在编译期不知道该类型的大小，不同的类型大小是不同的。==
+```rust
+fn draw2(x: dyn Draw) {
+    x.draw();
+}
+```
