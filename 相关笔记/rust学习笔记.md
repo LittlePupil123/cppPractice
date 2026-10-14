@@ -2244,3 +2244,685 @@ fn draw2(x: dyn Draw) {
     x.draw();
 }
 ```
+正是这种无法类型大小会变化导致的原因导致我们得用指针（引用或者box）来指明分配一种地址存放这个类型（编译期分配了内存，运行期再填入，和&str是同一个原因）
+
+### 特征对象的动态发放
+与泛型的工作原理做对比。泛型是在编译期时自动为泛型参数对应的具体的类型生成一份同样功能的代码。这种方式被称为静态发放
+动态分发(dynamic dispatch)，在这种情况下，直到运行时，才能确定需要调用什么方法。之前代码中的关键字 dyn 正是在强调这一“动态”的特点。
+>当使用特征对象时，Rust 必须使用动态分发。编译器无法知晓所有可能用于特征对象代码的类型，所以它也不知道应该调用哪个类型的哪个方法实现。为此，Rust 在运行时使用特征对象中的指针来知晓需要调用哪个方法。动态分发也阻止编译器有选择的内联方法代码，这会相应的禁用一些优化。
+#### 具体解析特征对象的底层
+![alt text](./image/TraitObject.png)
+这张图就解释了Box\<T>和Box\<dyn T>的区别，即静态分发和动态分发区别
+根据这张图我们能知道特征对象的特点
+* 特征对象大小不固定
+* 几乎总是使用特征对象的引用方式，如 &dyn Draw、Box\<dyn Draw>
+    *  虽然特征对象没有固定大小，但它的引用类型的大小是固定的，它由两个指针组成（ptr 和 vptr），因此占用两个指针大小
+    *  一个指针 ptr 指向实现了特征 Draw 的具体类型的实例，也就是当作特征 Draw 来用的类型的实例，比如类型 Button 的实例、类型 SelectBox 的实例
+    *  另一个指针 vptr 指向一个虚表 vtable，vtable 中保存了类型 Button 或类型 SelectBox 的实例对于可以调用的实现于特征 Draw 的方法。当调用方法时，直接从 vtable 中找到方法并调用。之所以要使用一个 vtable 来保存各实例的方法，是因为实现了特征 Draw 的类型有多种，这些类型拥有的方法各不相同，当将这些类型的实例都当作特征 Draw 来使用时(此时，它们全都看作是特征 Draw 类型的实例)，有必要区分这些实例各自有哪些方法可调用
+
+==简而言之，当类型 Button 实现了特征 Draw 时，类型 Button 的实例对象 btn 可以当作特征 Draw 的特征对象类型来使用，btn 中保存了作为特征对象的数据指针（指向类型 Button 的实例数据）和行为指针（指向 vtable）。==
+一定要注意，此时的 btn 是 **Draw 的特征对象的实例**，而不再是具体类型**Button 的实例**，而且 btn 的 ==vtable 只包含了实现自特征 Draw 的那些方法（比如 draw），因此 btn 只能调用实现于特征 Draw 的 draw 方法，而不能调用类型 Button 本身实现的方法和类型 Button 实现于其他特征的方法==。也就是说，btn 是哪个特征对象的实例，它的 vtable 中就包含了该特征的方法。
+
+### self和Self
+self指**实例**，Self指实例的**类型**
+
+### 特征对象的限制
+特征必须满足对象安全原则，才会能够拥有特征对象
+当特征的所有方法都符合以下原则时，该特征才符合对象安全：
+* 方法的返回类型不能是 Self
+* 方法没有任何泛型参数
+>原因：对象安全对于特征对象是必须的，因为一旦有了特征对象，就不再需要知道实现该特征的具体类型是什么了。如果特征方法返回了具体的 Self 类型，但是特征对象忘记了其真正的类型，那这个 Self 就非常尴尬，因为没人知道它是谁了。而对于泛型类型参数来说，当使用特征时其会放入具体的类型参数：此具体类型变成了实现该特征的类型的一部分。而当使用特征对象时其具体类型被抹去了，故而无从得知放入泛型参数类型到底是什么。
+
+## 集合类型
+### Vector数组
+#### 创建动态数组
+**Vec::new()**
+```rust
+let v: Vec<i32> = Vec::new();
+```
+上述代码显式声明了Vec的类型
+但是如果你加了一个元素进去，就能推断Vec的类型从而不需要声明类型
+```rust
+let mut v = Vec::new();
+v.push(1);
+```
+
+**vec![]**
+采用vec![]的方式声明vector数组，能直接初始化数组中的元素
+```rust
+let v = vec![1, 2, 3];
+```
+#### 更新动态数组
+采用push()方法可往后追加元素
+```rust
+let mut v = Vec::new();
+v.push(1);
+```
+==注意，这里我们必须声明数组是mut模式==
+
+#### 访问元素
+**索引直接访问**
+**采用get()方法访问**
+
+```rust
+let v = vec![1, 2, 3, 4, 5];
+
+let third: &i32 = &v[2];
+println!("第三个元素是 {}", third);
+
+match v.get(2) {
+    Some(third) => println!("第三个元素是 {third}"),
+    None => println!("去你的第三个元素，根本没有！"),
+}
+```
+我们可以直观得知，采用get和直接访问的不同之处在于，get返回的是一个option枚举类型包裹的值，需要做模式匹配取出
+>二者的各自优势很明显，采用直接索引引用可以直观，快速，简洁，但是可能索引出界，不安全；而采用get()方法，就可以安全的进行，但是性能轻微损耗，而且使用不方便。
+
+#### 同时借用多个元素
+以下代码会编译出错
+```rust
+let mut v = vec![1, 2, 3, 4, 5];
+
+let first = &v[0];
+
+v.push(6);
+
+println!("The first element is: {first}");
+```
+原因在于，我们的first是不可变借用，v是可变借用，且first在push操作后又进行了使用操作，这会出现同一作用域下既有可变引用，又有不可变引用。==而单独针对这段代码的情况，报错是因为，做了push操作后，数组可能因为原有内存不够而重新分配到新的连续内存块，这样，first的引用，**可能**会变为一个悬空指针。所以编译不过。==
+
+#### 迭代遍历元素
+```rust
+//直接迭代，比用索引更快更方便
+let v = vec![1, 2, 3];
+for i in &v {
+    println!("{i}");
+}
+//也能修改元素
+let mut v = vec![1, 2, 3];
+for i in &mut v {
+    *i += 10
+}
+```
+
+#### vector常用方法
+更多更灵活的初始化方式：
+```rust
+fn main() {
+    let v = vec![0; 3];   // 默认值为 0，初始长度为 3
+    let v_from = Vec::from([0, 0, 0]);
+    assert_eq!(v, v_from);
+}
+```
+
+动态数组意味着我们增加元素时，如果容量不足就会导致 vector 扩容（目前的策略是重新申请一块 2 倍大小的内存，再将所有元素拷贝到新的内存位置，同时更新指针数据），显然，当频繁扩容或者当元素数量较多且需要扩容时，大量的内存拷贝会降低程序的性能。
+可以考虑在初始化时就指定一个实际的预估容量，尽量减少可能的内存拷贝：
+```rust
+fn main() {
+    let mut v = Vec::with_capacity(10);
+    v.extend([1, 2, 3]);    // 附加数据到 v
+    println!("Vector 长度是: {}, 容量是: {}", v.len(), v.capacity());
+
+    v.reserve(100);        // 调整 v 的容量，至少要有 100 的容量
+    println!("Vector（reserve） 长度是: {}, 容量是: {}", v.len(), v.capacity());
+
+    v.shrink_to_fit();     // 释放剩余的容量，一般情况下，不会主动去释放容量
+    println!("Vector（shrink_to_fit） 长度是: {}, 容量是: {}", v.len(), v.capacity());
+}
+```
+
+一些常用方法：
+```rust
+let mut v =  vec![1, 2];
+assert!(!v.is_empty());         // 检查 v 是否为空
+
+v.insert(2, 3);                 // 在指定索引插入数据，索引值不能大于 v 的长度， v: [1, 2, 3] 
+assert_eq!(v.remove(1), 2);     // 移除指定位置的元素并返回, v: [1, 3]
+assert_eq!(v.pop(), Some(3));   // 删除并返回 v 尾部的元素，v: [1]
+assert_eq!(v.pop(), Some(1));   // v: []
+assert_eq!(v.pop(), None);      // 记得 pop 方法返回的是 Option 枚举值
+v.clear();                      // 清空 v, v: []
+
+let mut v1 = [11, 22].to_vec(); // append 操作会导致 v1 清空数据，增加可变声明
+v.append(&mut v1);              // 将 v1 中的所有元素附加到 v 中, v1: []
+v.truncate(1);                  // 截断到指定长度，多余的元素被删除, v: [11]
+v.retain(|x| *x > 10);          // 保留满足条件的元素，即删除不满足条件的元素
+
+let mut v = vec![11, 22, 33, 44, 55];
+// 删除指定范围的元素，同时获取被删除元素的迭代器, v: [11, 55], m: [22, 33, 44]
+let mut m: Vec<_> = v.drain(1..=3).collect();    
+
+let v2 = m.split_off(1);        // 指定索引处切分成两个 vec, m: [22], v2: [33, 44]
+```
+
+可以像数组切片的方式获取部分元素
+```rust
+fn main() {
+    let v = vec![11, 22, 33, 44, 55];
+    let slice = &v[1..=3];
+    assert_eq!(slice, &[22, 33, 44]);
+}
+```
+
+#### vector的排序
+实现了两种排序算法，分别为**稳定的排序 sort 和 sort_by**，以及**非稳定排序 sort_unstable 和 sort_unstable_by**
+==一般来说，整型数组可以直接用这些方法，但浮点型不行，因为浮点型有部分元素没有实现可比较（Ord）的特征==
+
+**结构体比较排序**
+通过重载cmp函数进行
+```rust
+#[derive(Debug)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+impl Person {
+    fn new(name: String, age: u32) -> Person {
+        Person { name, age }
+    }
+}
+
+fn main() {
+    let mut people = vec![
+        Person::new("Zoe".to_string(), 25),
+        Person::new("Al".to_string(), 60),
+        Person::new("John".to_string(), 1),
+    ];
+    // 定义一个按照年龄倒序排序的对比函数
+    people.sort_unstable_by(|a, b| b.age.cmp(&a.age));
+
+    println!("{:?}", people);
+}
+```
+排序需要我们实现 Ord 特性，那么如果我们把我们的结构体实现了该特性，是否就不需要我们自定义对比函数了呢？
+是，但不完全是，实现 Ord 需要我们实现 Ord、Eq、PartialEq、PartialOrd 这些属性。好消息是，你可以 derive 这些属性
+```rust
+#[derive(Debug, Ord, Eq, PartialEq, PartialOrd)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+impl Person {
+    fn new(name: String, age: u32) -> Person {
+        Person { name, age }
+    }
+}
+
+fn main() {
+    let mut people = vec![
+        Person::new("Zoe".to_string(), 25),
+        Person::new("Al".to_string(), 60),
+        Person::new("Al".to_string(), 30),
+        Person::new("John".to_string(), 1),
+        Person::new("John".to_string(), 25),
+    ];
+
+    people.sort_unstable();
+
+    println!("{:?}", people);
+}
+```
+需要 derive Ord 相关特性，需要确保你的结构体中所有的属性均实现了 Ord 相关特性，否则会发生编译错误。derive 的默认实现会依据属性的顺序依次进行比较，如上述例子中，当 Person 的 name 值相同，则会使用 age 进行比较。
+
+### HashMap
+键值映射集合
+#### 创建HashMap
+**用new创建**
+跟创建动态数组 Vec 的方法类似，可以使用 new 方法来创建 HashMap，然后通过 insert 方法插入键值对。
+```rust
+use std::collections::HashMap;
+
+// 创建一个HashMap，用于存储宝石种类和对应的数量
+let mut my_gems = HashMap::new();
+
+// 将宝石类型和对应的数量写入表中
+my_gems.insert("红宝石", 1);
+my_gems.insert("蓝宝石", 2);
+my_gems.insert("河边捡的误以为是宝石的破石头", 18);
+```
+这里使用了use来导入HashMap，很容易知道，因为HashMap没在Prelude库中。
+所有的集合类型都是动态的，意味着它们没有固定的内存大小，因此它们底层的数据都存储在内存堆上，然后通过一个存储在栈中的引用类型来访问。同时，跟其它集合类型一致，HashMap 也是内聚性的，即所有的 K 必须拥有同样的类型，V 也是如此。
+所以同样会出现内存可能不够于是重新分配带来的性能损耗，
+>跟 Vec 一样，如果预先知道要存储的 KV 对个数，可以使用 HashMap::with_capacity(capacity) 创建指定大小的 HashMap，避免频繁的内存分配和拷贝，提升性能。
+
+**用迭代器和collect方法**
+在实际使用中，不是所有的场景都能 new 一个哈希表后，然后悠哉悠哉的依次插入对应的键值对，而是可能会从另外一个数据结构中，获取到对应的数据，最终生成 HashMap。
+在这种情形下，Rust 为我们提供了一个非常精妙的解决办法：先将 Vec 转为迭代器，接着通过 collect 方法，将迭代器中的元素收集后，转成 HashMap
+```rust
+fn main() {
+    use std::collections::HashMap;
+
+    let teams_list = vec![
+        ("中国队".to_string(), 100),
+        ("美国队".to_string(), 10),
+        ("日本队".to_string(), 50),
+    ];
+
+    let teams_map: HashMap<_,_> = teams_list.into_iter().collect();
+    
+    println!("{:?}",teams_map)
+}
+```
+代码很简单，into_iter 方法将列表转为迭代器，接着通过 collect 进行收集，不过需要注意的是，collect 方法在内部实际上支持生成多种类型的目标集合，因此我们需要通过类型标注 HashMap<_,_> 来告诉编译器：请帮我们收集为 HashMap 集合类型，具体的 KV 类型，编译器自行推导
+
+#### 所有权转移
+有copy特征的类型，数值是通过复制进行；没有copy特征，则所有权转移给HashMap。
+如果你**使用引用类型放入 HashMap 中，请确保该引用的生命周期至少跟 HashMap 活得一样久**
+
+#### 查询HashMap
+可通过get()获取
+```rust
+use std::collections::HashMap;
+
+let mut scores = HashMap::new();
+
+scores.insert(String::from("Blue"), 10);
+scores.insert(String::from("Yellow"), 50);
+
+let team_name = String::from("Blue");
+let score: Option<&i32> = scores.get(&team_name);
+```
+根据以上代码注意几点：
+* get 方法返回一个 Option<&i32> 类型：当查询不到时，会返回一个 None，查询到时返回 Some(&i32)
+* &i32 是对 HashMap 中值的借用，如果不使用借用，可能会发生所有权的转移
+* get 方法的 key 参数必须是一个引用，如这里的 scores.get(&team_name)，这是因为 HashMap<K, V> 的 get 方法的签名本身声明为就是一个引用类型，且K被做了特征约束，要求类型必须有Borrow<>特征
+
+如果想直接获取其中的值，而不是借用，也不被包装，则可以采用以下的代码：
+```rust
+let score: i32 = scores.get(&team_name).copied().unwrap_or(0);
+```
+#### 迭代HashMap
+可用循环依次遍历KV对
+```rust
+use std::collections::HashMap;
+
+let mut scores = HashMap::new();
+
+scores.insert(String::from("Blue"), 10);
+scores.insert(String::from("Yellow"), 50);
+
+for (key, value) in &scores {
+    println!("{}: {}", key, value);
+}
+```
+
+#### 更新HashMap的值
+```rust
+fn main() {
+    use std::collections::HashMap;
+
+    let mut scores = HashMap::new();
+
+    scores.insert("Blue", 10);
+
+    // 覆盖已有的值
+    let old = scores.insert("Blue", 20);
+    assert_eq!(old, Some(10));
+
+    // 查询新插入的值
+    let new = scores.get("Blue");
+    assert_eq!(new, Some(&20));
+
+    // 查询Yellow对应的值，若不存在则插入新值
+    let v = scores.entry("Yellow").or_insert(5);
+    assert_eq!(*v, 5); // 不存在，插入5
+
+    // 查询Yellow对应的值，若不存在则插入新值
+    let v = scores.entry("Yellow").or_insert(50);
+    assert_eq!(*v, 5); // 已经存在，因此50没有插入
+}
+```
+
+#### 在已有值的基础上更新
+假设一个场景：查询某个 key 对应的值，若不存在则插入新值，若存在则对已有的值进行更新，例如在文本中统计词语出现的次数：
+```rust
+use std::collections::HashMap;
+
+let text = "hello world wonderful world";
+
+let mut map = HashMap::new();
+// 根据空格来切分字符串(英文单词都是通过空格切分)
+for word in text.split_whitespace() {
+    let count = map.entry(word).or_insert(0);
+    *count += 1;
+}
+
+println!("{:?}", map);
+```
+在上述代码中，新建一个 map 用于保存词语出现的次数，插入一个词语时会进行判断：若之前没有插入过，则使用该词语作 Key，插入次数 0 作为 Value，若之前插入过则取出之前统计的该词语出现的次数，对其加一。
+这说明两点：
+* or_insert 返回了 &mut v 引用，因此可以通过该可变引用直接修改 map 中对应的值
+* 使用 count 引用时，需要先进行解引用 *count，否则会出现类型不匹配
+
+## 生命周期
+简单来说，生命周期就是引用有效的作用域
+这个概念最重要的在于，解决悬垂指针和不安全内存引用的问题
+```rust
+{
+    let r;
+
+    {
+        let x = 5;
+        r = &x;
+    }
+
+    println!("r: {}", r);
+}
+```
+这段代码是错的：因为r生成后，被赋予了x的引用地址。但是，x死的比r快（作用域范围），那么在x死后，r的内部存入的原来的x的地址就是一串未定义的内存。使用r就变为了悬垂指针。这时调用r就会让内存不安全，并且程序结果就会出现怪异问题。在复杂代码中，调试和发觉
+### 借用检查
+于是为了检查rust语法中引用和所有权的合法性，于是rust引用了一个借用检查器（borrow checker）来检查借用的合法性
+```rust
+{
+    let r;                // ---------+-- 'a
+                          //          |
+    {                     //          |
+        let x = 5;        // -+-- 'b  |
+        r = &x;           //  |       |
+    }                     // -+       |
+                          //          |
+    println!("r: {}", r); //          |
+}                         // ---------+
+```
+这段代码和之前的一模一样，唯一的区别在于增加了对变量生命周期的注释。这里，r 变量被赋予了生命周期 'a，x 被赋予了生命周期 'b，从图示上可以明显看出生命周期 'b 比 'a 小很多。
+在编译期，Rust 会比较两个变量的生命周期，结果发现 r 明明拥有生命周期 'a，但是却引用了一个小得多的生命周期 'b，在这种情况下，编译器会认为我们的程序存在风险，因此拒绝运行。
+如果想要编译通过，也很简单，只要 'b 比 'a 大就好。总之，x 变量只要比 r 活得久，那么 r 就能随意引用 x 且不会存在危险：
+```rust
+{
+    let x = 5;            // ----------+-- 'b
+                          //           |
+    let r = &x;           // --+-- 'a  |
+                          //   |       |
+    println!("r: {}", r); //   |       |
+                          // --+       |
+}                         // ----------+
+```
+### 函数中的生命周期
+在函数参数中存在多个引用时，编译器有时会无法自动推导生命周期，因为可能传入的多个参数的原数据各自的生命周期是不一样的，因此编译器无法判断会返回哪一个引用类型，因此函数就可能报错
+此时就需要我们手动去标注，通过为参数标注合适的生命周期来帮助编译器进行借用检查的分析。
+#### 生命周期标注语法
+==重要前提：生命周期标注并不会改变任何引用的实际作用域==
+生命周期的语法也颇为与众不同，以=='== 开头，==名称往往是一个单独的小写字母，大多数人都用 'a 来作为生命周期的名称==。 如果是==引用类型==的参数，那么==生命周期会位于引用符号 &== 之后，并用一个空格来将生命周期和引用参数分隔开:
+```rust
+&i32        // 一个引用
+&'a i32     // 具有显式生命周期的引用
+&'a mut i32 // 具有显式生命周期的可变引用
+```
+生命周期的标注语法，本身没有任何实际操作意义。它的作用是告诉编译器，哪些多个引用归属于哪个同一生命周期中，
+>例如，有一个函数，它的第一个参数 first 是一个指向 i32 类型的引用，具有生命周期 'a，该函数还有另一个参数 second，它也是指向 i32 类型的引用，并且同样具有生命周期 'a。此处生命周期标注仅仅说明，这两个参数 first 和 second 至少活得和'a 一样久，至于到底活多久或者哪个活得更久，抱歉我们都无法得知：
+```rust
+fn useless<'a>(first: &'a i32, second: &'a i32) -> &'a i32 {}
+```
+该函数签名表明对于某些生命周期 'a，函数的两个参数都至少跟 'a 活得一样久，同时函数的返回引用也至少跟 'a 活得一样久
+注意：
+* 和泛型一样，使用生命周期参数，需要先声明 <'a>
+* first、second 和返回值至少活得和 'a 一样久（因为返回值要么是 first，要么是 second）
+* 生命周期 'a 不代表生命周期等于 'a，而是大于等于 'a,两个参数的实际生命周期可能是不一致的
+* 由于生命周期标注并不会改变实际周期，生命周期标签不是实际改变了周期，而仅仅是做保证这多个引用的周期一定大于等于'a。如果不满足这点编译器报错
+* 在这段代码里面，'a的生命周期的作用域范围，就是再传给参数first，second后这二者引用类型变量（实参）的生命周期的重合部分；而返回值因为纳入'a标签，同样也是那二者的重合部分作为生命周期
+
+#### 函数返回的是引用类型的返回值的生命周期从何而来？
+* 函数参数的生命周期
+* 函数体中某个新建引用的生命周期。
+对于后者而言，如果不妥善处理，就会出现悬垂引用
+>因为对于大部分语言来说返回出来的引用对应的原变量在函数结束后就已经被销毁了，那么返回出来的就是悬垂指针
+
+而rust就会通过编译器标注和编写员标注的生命周期自动判断是否合理，而对于后者的问题是没办法手动标注生命周期标签解决的，从而在**可能**出现悬垂指针的情况下直接报错，从而规避安全问题
+
+那么正确的方法是直接将生成的所有权转交出去，比如以下的函数
+```rust
+fn longest(_x: &str, _y: &str) -> String {
+    String::from("really long string")
+}
+
+fn main() {
+   let s = longest("not", "important");
+}//所有权直接移交给s
+```
+**总结：** ==生命周期语法用来将函数的多个引用参数和返回值的作用域关联到一起，一旦关联到一起后，Rust 就拥有充分的信息来确保我们的操作是内存安全的。==
+### 结构体中的生命周期
+之前结构体中涉及字符串都用的是String类型，因为他们只用考虑所有权转移的问题，但学了目前的生命周期标签后，我们可以把String换为使用&str
+```rust
+struct ImportantExcerpt<'a> {
+    part: &'a str, 
+}
+
+fn main() {
+    let novel = String::from("Call me Ishmael. Some years ago...");
+    let first_sentence = novel.split('.').next().expect("Could not find a '.'");
+    let i = ImportantExcerpt {
+        part: first_sentence,
+    };
+}
+```
+ImportantExcerpt 结构体中有一个引用类型的字段 part，因此需要为它标注上生命周期。结构体的生命周期标注语法跟泛型参数语法很像，需要对生命周期参数进行声明 <'a>。该生命周期标注说明，结构体 ImportantExcerpt 所引用的字符串 str 生命周期需要大于等于该结构体的生命周期。
+==注意：结构体中只要声明了引用类型，就必须做生命周期标签显式说明，来告诉编译器，part的引用类型的生命周期必须比结构体的实例还要长或相等==
+>生命周期标签的本质：它在同时约束和向编译器约定两个方面：1.向编译器说明引用类型变量的生命周期是'a；2.向编译器保证，传入的数据的本身的声明周期是长于'a的。在这段代码中，也就是part的生命周期要短于first_sentence
+>而生命周期标签的'a的发生点，一般来说是调用点处开始！
+
+### 生命周期消除
+首先，我们发现对于需要表明生命周期标签的时候基本上出现在结构体，或者**函数存在多个引用参数，并返回值是引用类型。**结构体必须规定引用的生命周期标签，但是函数却存在很多时候不需要标注
+原因在于：对于编译器来说，每个引用类型变量都应该会有一个生命周期，但是为了简化代码，于是编译器能消除大部分生命周期，只用指明最难以清晰的部分
+**注意两点：**
+* 消除规则不是万能的，若编译器不能确定某件事是正确时，会直接判为不正确，那么你还是需要手动标注生命周期
+* 函数或者方法中，参数的生命周期被称为 输入生命周期，返回值的生命周期被称为 输出生命周期
+#### 三条消除规则：
+这其中，第一条是关于输入生命周期；其余两条关于输出生命周期
+1. 每一个引用参数都会获得独自的生命周期
+2. 若只有一个输入生命周期（函数参数中只有一个引用类型），那么该生命周期会被赋给所有的输出生命周期，也就是所有返回值的生命周期都等于该输入生命周期
+3. 若存在多个输入生命周期，且其中一个是 &self 或 &mut self，则 &self 的生命周期被赋给所有的输出生命周期
+**针对3，我们会额外展开：**
+这是一道例子：
+```rust
+struct ImportantExcerpt<'a> {
+    part: &'a str,
+}
+
+impl<'a> ImportantExcerpt<'a> {
+    fn announce_and_return_part<'b>(&'a self, announcement: &'b str) -> &'a str {
+        println!("Attention please: {}", announcement);
+        self.part
+    }
+}
+```
+>在这里，显式标注的正是编译器默认标注的。
+>那么我们把输出生命周期改为'b会报错。原因是self.part或者说整个绑定的方法都应该在self实例存在的生命周期之内（也就是输出生命周期周期得是'a,因为这样才能保证我们调用方法和调用part字段时实例依旧存在）。但当我们改为'b后，self.part在结构体中声明的生命周期本应是'a的生命周期，现在却说它属于'b。编译器就无法保证这样生命周期是合法的（因为我们不知道'b和'a的关系，也就不能知道调用self.part时实例是否还存在）
+
+==注意，因为part是ImportantExcerpt结构体的字段，所以二者的生命周期是一致的。在声明结构体实例的同时'a就已经开始了==
+所以我们可以像特征约束那样表明'b和'a之间的关系：
+```rust
+impl<'a: 'b, 'b> ImportantExcerpt<'a> {
+    fn announce_and_return_part(&'a self, announcement: &'b str) -> &'b str {}
+}
+```
+注意'a:'b这表明了向编译器保证'a大于'b，从而编译器能够检查确认并放行。
+
+### 静态生命周期
+在 Rust 中有一个非常特殊的生命周期，那就是 'static，拥有该生命周期的引用可以和整个程序活得一样久。
+当生命周期不知道怎么标时，对类型施加一个静态生命周期的约束 T: 'static 是不是很爽？这样我和编译器再也不用操心它到底活多久了。
+
+嗯，只能说，这个想法是对的，在不少情况下，'static 约束确实可以解决生命周期编译不通过的问题，但是问题来了：本来该引用没有活那么久，但是你非要说它活那么久，万一引入了潜在的 BUG 怎么办？
+
+因此，遇到因为生命周期导致的编译不通过问题，首先想的应该是：是否是我们试图创建一个悬垂引用，或者是试图匹配不一致的生命周期，而不是简单粗暴的用 'static 来解决问题。
+
+**总之**
+* 生命周期 'static 意味着能和程序活得一样久，例如字符串字面量和特征对象
+* 实在遇到解决不了的生命周期标注问题，可以尝试 T: 'static，有时候它会给你奇迹
+
+## 返回值和错误处理
+两类错误：
+1. 可恢复的错误：通常用于从系统全局角度来看可以接受的错误，例如处理用户的访问、操作等错误，这些错误只会影响某个用户自身的操作进程，而不会对系统的全局稳定性产生影响
+2. 不可恢复的错误：刚好相反，该错误通常是全局性或者系统性的错误，例如数组越界访问，系统启动时发生了影响启动流程的错误等等，这些错误的影响往往对于系统来说是致命的
+
+### panic!()深度剖析，处理不可恢复错误
+假设一个场景：假设我们想要从文件读取数据，如果失败，你有没有好的办法通知调用者为何失败？如果成功，你有没有好的办法把读取的结果返还给调用者？
+#### 被动触发
+编译器的一般不合法时出现的报错，不是编写者自己手动编写出来的
+#### 主动触发
+在某些特殊场景中，开发者想要主动抛出一个异常，例如开头提到的在系统启动阶段读取文件失败。
+对此，Rust 为我们提供了 panic! 宏，当调用执行该宏时，程序会打印出一个错误信息，展开报错点往前的函数调用堆栈，最后退出程序。
+==切记，一定是不可恢复的错误，才调用 panic! 处理，你总不想系统仅仅因为用户随便传入一个非法参数就崩溃吧？所以，只有当你不知道该如何处理时，再去调用 panic!.==
+```rust
+fn main() {
+    panic!("crash and burn");
+}
+```
+```rust
+输出结果：
+thread 'main' panicked at 'crash and burn', src/main.rs:2:5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+这上面包含了两种重要信息：
+* main 函数所在的线程崩溃了，发生的代码位置是 src/main.rs 中的第 2 行第 5 个字符（包含该行前面的空字符）
+* 在使用时加上一个环境变量可以获取更详细的栈展开信息：
+  * Linux/macOS 等 UNIX 系统： RUST_BACKTRACE=1 cargo run
+  * Windows 系统（PowerShell）： $env:RUST_BACKTRACE=1 ; cargo run
+
+#### backtrace栈展开
+在真实场景中，错误往往涉及到很长的调用链甚至会深入第三方库，如果没有栈展开技术，错误将难以跟踪处理，一个真实的崩溃例子：
+```rust
+fn main() {
+    let v = vec![1, 2, 3];
+
+    v[99];
+}
+```
+崩溃是因为数组越界。报错会得到具体的行与原因，于是我们开始去看这行代码调用了什么？
+所以按照提示：RUST_BACKTRACE=1 cargo run 或 $env:RUST_BACKTRACE=1 ; cargo run 来再一次运行程序：
+```rust
+thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 99', src/main.rs:4:5
+stack backtrace:
+   0: rust_begin_unwind
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/std/src/panicking.rs:517:5
+   1: core::panicking::panic_fmt
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/core/src/panicking.rs:101:14
+   2: core::panicking::panic_bounds_check
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/core/src/panicking.rs:77:5
+   3: >::index
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/core/src/slice/index.rs:184:10
+   4: core::slice::index:: for [T]>::index
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/core/src/slice/index.rs:15:9
+   5:  as core::ops::index::Index>::index
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/alloc/src/vec/mod.rs:2465:9
+   6: world_hello::main
+             at ./src/main.rs:4:5
+   7: core::ops::function::FnOnce::call_once
+             at /rustc/59eed8a2aac0230a8b53e89d4e99d55912ba6b35/library/core/src/ops/function.rs:227:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+```
+上面的代码就是一次栈展开（也称栈回溯），它包含了函数调用的顺序，当然按照逆序排列：最近调用的函数排在列表的最上方。因为咱们的 main 函数基本是最先调用的函数了，所以排在了倒数第二位，还有一个关注点，排在最顶部最后一个调用的函数是 rust_begin_unwind，该函数的目的就是进行栈展开，呈现这些列表信息给我们。
+
+要获取到栈回溯信息，你还需要开启 debug 标志，该标志在使用 cargo run 或者 cargo build 时自动开启（这两个操作默认是 Debug 运行方式）。同时，栈展开信息在不同操作系统或者 Rust 版本上也有所不同。
+
+#### panic时两种终止方式
+当出现 panic! 时，程序提供了两种方式来处理终止流程：栈展开和直接终止。
+
+其中，默认的方式就是 栈展开，这意味着 Rust 会回溯栈上数据和函数调用，因此也意味着更多的善后工作，好处是可以给出充分的报错信息和栈调用信息，便于事后的问题复盘。直接终止，顾名思义，不清理数据就直接退出程序，善后工作交与操作系统来负责。
+
+对于绝大多数用户，使用默认选择是最好的，但是当你关心最终编译出的二进制可执行文件大小时，那么可以尝试去使用直接终止的方式，例如下面的配置修改 Cargo.toml 文件，实现在 release 模式下遇到 panic 直接终止：
+```rust
+[profile.release]
+panic = 'abort'
+```
+
+**panic后程序是否会终止？**
+如果在main，则会直接终止程序，如果在其他函数块，则是只终止其他函数块
+
+#### 使用panic的常见场景
+##### 背景补充，更深地探索result枚举
+```rust
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+```
+当没有错误发生时，函数返回一个用 Result 类型包裹的值 Ok(T)，当错误时，返回一个 Err(E)。对于 Result 返回我们有很多处理方法，最简单粗暴的就是 unwrap 和 expect，这两个函数非常类似，我们以 unwrap 举例：
+```rust
+use std::net::IpAddr;
+let home: IpAddr = "127.0.0.1".parse().unwrap();
+```
+上面的 parse 方法试图将字符串 "127.0.0.1" 解析为一个 IP 地址类型 IpAddr，它返回一个 Result<IpAddr, E> 类型，如果解析成功，则把 Ok(IpAddr) 中的值赋给 home，如果失败，则不处理 Err(E)，而是直接 panic。
+
+因此 unwrap 简而言之：成功则返回值，失败则 panic，总之不进行任何错误处理。
+
+##### 实例，原型，测试
+这几个场景下，需要快速地搭建代码，错误处理会拖慢编码的速度，也不是特别有必要，因此通过 unwrap、expect 等方法来处理是最快的。
+同时，当我们回头准备做错误处理时，可以全局搜索这些方法，不遗漏地进行替换。
+
+**你确切的知道你的程序是正确时，可以使用 panic**
+例如上面的例子，"127.0.0.1" 就是 ip 地址，因此我们知道 parse 方法一定会成功，那么就可以直接用 unwrap 方法进行处理。
+当然，如果该字符串是来自于用户输入，那在实际项目中，就必须用错误处理的方式，而不是 unwrap，否则你的程序一天要崩溃几十万次！
+
+**可能导致全局有害状态时**
+有害状态大概分为几类：
+* 非预期的错误
+* 后续代码的运行会受到显著影响
+* 内存安全的问题
+当错误预期会出现时，返回一个错误较为合适，例如解析器接收到格式错误的数据，HTTP 请求接收到错误的参数甚至该请求内的任何错误（不会导致整个程序有问题，只影响该次请求）。因为错误是可预期的，因此也是可以处理的。
+当启动时某个流程发生了错误，对后续代码的运行造成了影响，那么就应该使用 panic，而不是处理错误后继续运行，当然你可以通过重试的方式来继续。
+上面提到过，数组访问越界，就要 panic 的原因，这个就是属于内存安全的范畴，一旦内存访问不安全，那么我们就无法保证自己的程序会怎么运行下去，也无法保证逻辑和数据的正确性。
+
+### result和?处理可恢复的错误
+继续思考文件读取开启的那个例子：当时我们解决了读取文件时遇到不可恢复错误该怎么处理的问题，现在来看看，读取过程中，正常返回和遇到可以恢复的错误时该如何处理。
+假设，我们有一台消息服务器，每个用户都通过 websocket 连接到该服务器来接收和发送消息，该过程就涉及到 socket 文件的读写，那么此时，如果一个用户的读写发生了错误，显然不能直接 panic，否则服务器会直接崩溃，所有用户都会断开连接，因此我们需要一种更温和的错误处理方式：Result\<T, E>。
+
+举一个打开文件的例子：
+```rust
+use std::fs::File;
+
+fn main() {
+    let f = File::open("hello.txt");
+}
+```
+File::open()函数会返回一个result类型
+>如何获知变量类型或者函数的返回类型
+>有几种常用的方式，此处更推荐第二种方法：
+>第一种是查询标准库或者三方库文档，搜索 File，然后找到它的 open 方法
+>在 Rust IDE 章节，我们推荐了 VSCode IDE 和 rust-analyzer 插件，如果你成功安装的话，那么就可以在 VSCode 中很方便的通过代码跳转的方式查看代码，同时 rust-analyzer 插件还会对代码中的类型进行标注，非常方便好用！
+>你还可以尝试故意标记一个错误的类型，然后让编译器告诉你，比如
+```rust
+let f: u32 = File::open("hello.txt");
+
+输出：
+error[E0308]: mismatched types
+ --> src/main.rs:4:18
+  |
+4 |     let f: u32 = File::open("hello.txt");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^ expected u32, found enum
+`std::result::Result`
+  |
+  = note: expected type `u32`
+             found type `std::result::Result`
+```
+这里我们故意标为u32，而编译器说明返回的类型时Result类型
+而这个Result中绑定的字段是哪些类型呢？
+对于File来说，返回的字段类型是：Result\<std::fs::File,std::io::Error>
+File是一个文件句柄类型，Error是一个io错误类型
+
+#### 对返回的错误进行处理
+由于返回的是一个Result枚举类型，那么我们可以考虑用模式匹配来分开处理：
+```rust
+use std::fs::File;
+use std::io::ErrorKind;
+
+fn main() {
+    let f = File::open("hello.txt");
+
+    let f = match f {
+        Ok(file) => file,
+        Err(error) => match error.kind() {
+            ErrorKind::NotFound => match File::create("hello.txt") {
+                Ok(fc) => fc,
+                Err(e) => panic!("Problem creating the file: {:?}", e),
+            },
+            other_error => panic!("Problem opening the file: {:?}", other_error),
+        },
+    };
+}
+```
+在上述代码我们可以看到如何处理：当正常返回时，那么就返回file句柄，而如果发现返回错误类型那么对错误类型进行分类，分开不可恢复错误和可恢复错误，前者panic，后者进行处理
+上面代码在匹配出 error 后，又对 error 进行了详细的匹配解析，最终结果：
+* 如果是文件不存在错误 ErrorKind::NotFound，就创建文件，这里创建文件File::create 也是返回 Result，因此继续用 match 对其结果进行处理：创建成功，将新的文件句柄赋值给 f，如果失败，则 panic
+* 剩下的错误，一律 panic
