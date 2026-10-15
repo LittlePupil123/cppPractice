@@ -2926,3 +2926,86 @@ fn main() {
 上面代码在匹配出 error 后，又对 error 进行了详细的匹配解析，最终结果：
 * 如果是文件不存在错误 ErrorKind::NotFound，就创建文件，这里创建文件File::create 也是返回 Result，因此继续用 match 对其结果进行处理：创建成功，将新的文件句柄赋值给 f，如果失败，则 panic
 * 剩下的错误，一律 panic
+
+#### 失败就 panic: unwrap 和 expect
+在不需要处理错误的场景，例如写原型、示例时，我们不想使用 match 去匹配 Result\<T, E> 以获取其中的 T 值，因为 match 的穷尽匹配特性，你总要去处理下 Err 分支。那么有没有办法简化这个过程？有，答案就是 unwrap 和 expect。
+
+它们的作用就是，如果返回成功，就将 Ok(T) 中的值取出来，如果失败，就直接 panic，真的勇士绝不多 BB，直接崩溃。
+expect 跟 unwrap 很像，也是遇到错误直接 panic, 但是会带上自定义的错误提示信息，相当于重载了错误打印的函数
+```rust
+use std::fs::File;
+
+fn main() {
+    let f = File::open("hello.txt").expect("Failed to open hello.txt");
+}
+```
+```rust
+输出：
+thread 'main' panicked at 'Failed to open hello.txt: Os { code: 2, kind: NotFound, message: "No such file or directory" }', src/main.rs:4:37
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+#### 传播错误
+，一个功能涉及十几层的函数调用都有可能。而**错误处理也往往不是哪里调用出错，就在哪里处理**，实际应用中，大概率会把**错误层层上传然后交给调用链的上游函数进行处理**，==错误传播==将极为常见。
+例如以下函数从文件中读取用户名，然后将结果进行返回：
+```rust
+use std::fs::File;
+use std::io::{self, Read};
+
+fn read_username_from_file() -> Result<String, io::Error> {
+    // 打开文件，f是`Result<文件句柄,io::Error>`
+    let f = File::open("hello.txt");
+
+    let mut f = match f {
+        // 打开文件成功，将file句柄赋值给f
+        Ok(file) => file,
+        // 打开文件失败，将错误返回(向上传播)
+        Err(e) => return Err(e),
+    };
+    // 创建动态字符串s
+    let mut s = String::new();
+    // 从f文件句柄读取数据并写入s中
+    match f.read_to_string(&mut s) {
+        // 读取成功，返回Ok封装的字符串
+        Ok(_) => Ok(s),
+        // 将错误向上传播
+        Err(e) => Err(e),
+    }
+}
+```
+这段代码会发现，Err枚举出现后并没有直接panic，而是一层层传递给返回值Result类型，然后再对Result返回值处理，这就是传播错误。
+那么我们该怎么简化这些代码？
+###### ?宏符号
+采用 ==?== 符号来简化：
+```rust
+use std::fs::File;
+use std::io;
+use std::io::Read;
+
+fn read_username_from_file() -> Result<String, io::Error> {
+    let mut f = File::open("hello.txt")?;
+    let mut s = String::new();
+    f.read_to_string(&mut s)?;
+    Ok(s)
+}
+```
+?就是一个宏符号，和上文中的match含义是几乎一致的：
+```rust
+let mut f = match f {
+    // 打开文件成功，将file句柄赋值给f
+    Ok(file) => file,
+    // 打开文件失败，将错误返回(向上传播)
+    Err(e) => return Err(e),
+};
+```
+如果结果是 Ok(T)，则把 T 赋值给 f，如果结果是 Err(E)，则返回该错误，所以 ? 特别适合用来传播错误。
+>且关于？返回的Err(E)的错误类型，是能够进行错误转换的。比如明明语句中的表达式返回的错误是io::Error类型，但函数要求返回std::error::Error。?就会自动转换，因为io::Error实现了from特征，？能够自动调用特征实现转换
+>错误类型是有分级的，error::Error类似于表示所有类型错误，其下分为了多种错误，其中包含io::Error
+>这种转换非常好用，意味着你可以用一个大而全的 ReturnError 来覆盖所有错误类型，只需要为各种子错误类型实现这种转换即可
+
+**?也可以返回Option类型**
+类比Result。如果表达式返回Some(T)，那么?返回None
+
+==值得一提的是，?前的语句，如果返回的不是None或者Err，那么就会解构Some()和Ok()，返回包裹里的值，而不是返回Some()和Ok()==
+
+## 管理项目
