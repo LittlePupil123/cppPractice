@@ -3009,3 +3009,256 @@ let mut f = match f {
 ==值得一提的是，?前的语句，如果返回的不是None或者Err，那么就会解构Some()和Ok()，返回包裹里的值，而不是返回Some()和Ok()==
 
 ## 管理项目
+Rust提供了相应概念用于代码的组织管理：
+
+* 项目(Packages)：一个 Cargo 提供的 feature，可以用来构建、测试和分享包
+* 包(Crate)：一个由多个模块组成的树形结构，可以作为三方库进行分发，也可以生成可执行文件进行运行
+* 模块(Module)：可以一个文件多个模块，也可以一个文件一个模块，模块可以被认为是真实项目中的代码组织单元
+### 包crate
+由于真实项目的编写和管理远比之前所学的会更复杂，其文件结构也比Rust的Cargo new复杂的多。
+但Rust 为我们提供了强大的包管理工具：
+
+* 项目(Package)：可以用来构建、测试和分享包
+* 工作空间(WorkSpace)：对于大型项目，可以进一步将多个包联合在一起，组织成工作空间
+* 包(Crate)：一个由多个模块组成的树形结构，可以作为三方库进行分发，也可以生成可执行文件进行运行
+* 模块(Module)：可以一个文件多个模块，也可以一个文件一个模块，模块可以被认为是真实项目中的代码组织单元
+#### 定义
+Crate和Package时常出现混乱，但二者实际是不同的。
+**Crate（包）**
+对于 Rust 而言，包是一个独立的可编译单元，它编译后会生成一个可执行文件或者一个库。（可以理解成一个头文件）
+
+一个包会将相关联的功能打包在一起，使得该功能可以很方便的在多个项目中分享。例如标准库中没有提供但是在三方库中提供的 rand 包，它提供了随机数生成的功能，我们只需要将该包通过 use rand; 引入到当前项目的作用域中，就可以在项目中使用 rand 的功能：rand::XXX。
+
+同一个包中不能有同名的类型，但是在不同包中就可以。例如，虽然 rand 包中，有一个 Rng 特征，可是我们依然可以在自己的项目中定义一个 Rng，前者通过 rand::Rng 访问，后者通过 Rng 访问，对于编译器而言，这两者的边界非常清晰，不会存在引用歧义。
+
+**Package（项目）**
+Package 就是一个项目，因此它包含有独立的 Cargo.toml 文件，以及因为功能性被组织在一起的一个或多个包。一个 Package 只能包含一个库(library)类型的Package，但是可以包含多个二进制可执行类型的Package。
+
+##### 二进制Crate
+我们创建一个Package
+```
+$ cargo new my-project
+     Created binary (application) `my-project` package
+$ ls my-project
+Cargo.toml
+src
+$ ls my-project/src
+main.rs
+```
+我们ls浏览文件，发现并没有有关“crate”的身影
+我们打开其中的.toml文件，其中更是没有，只有[package]相关属性。
+![alt text](./image/image.png)
+==原因在于，在默认生成package的时候，生成的bin crate的名称默认和package一致。所以在别的包内调用（use关键词）实际上调用的是包的名称，但名字和package很像。==
+**而src/main.rs 是二进制包的根文件，该二进制包的包名跟所属 Package 相同，在这里都是 my-project，所有的代码执行都从该文件中的 fn main() 函数开始。**
+##### library（库） Crate
+创建一个库crate
+```
+$ cargo new my-lib --lib
+     Created library `my-lib` package
+$ ls my-lib
+Cargo.toml
+src
+$ ls my-lib/src
+lib.rs
+```
+**库类型的 Package** 只能作为三方库被其它项目引用，而==不能独立运行==，只有二进制 Package 才可以独立运行。
+与 src/main.rs 一样，Cargo 知道，如果一个 Package 包含有 src/lib.rs，意味它包含有一个库类型的同名包 my-lib，该包的根文件是 src/lib.rs。
+
+##### 总结crate和Package：
+* crate是一个编译单元，他是以一个src文件夹形式存在
+* Package是一个“项目”，在编译和运行上并不存在，这是个虚拟概念。
+
+##### Package典型结构
+```rust
+.
+├── Cargo.toml
+├── Cargo.lock
+├── src
+│   ├── main.rs
+│   ├── lib.rs
+│   └── bin
+│       └── main1.rs
+│       └── main2.rs
+├── tests
+│   └── some_integration_tests.rs
+├── benches
+│   └── simple_bench.rs
+└── examples
+    └── simple_example.rs
+
+```
+* 唯一库包：src/lib.rs
+* 默认二进制包：src/main.rs，编译后生成的可执行文件与 Package 同名
+* 其余二进制包：src/bin/main1.rs 和 src/bin/main2.rs，它们会分别生成一个文件同名的二进制可执行文件
+* 集成测试文件：tests 目录下
+* 基准性能测试 benchmark 文件：benches 目录下
+* 项目示例：examples 目录下
+
+### 模块（module）
+假设一个场景，一个小餐馆，我们创建一个package，库crate，来模拟这个餐馆
+
+然后建立一个嵌套模块
+```rust
+// 餐厅前厅，用于吃饭
+mod front_of_house {
+    mod hosting {
+        fn add_to_waitlist() {}
+
+        fn seat_at_table() {}
+    }
+
+    mod serving {
+        fn take_order() {}
+
+        fn serve_order() {}
+
+        fn take_payment() {}
+    }
+}
+```
+以上的代码创建了三个模块，有几点需要注意的：
+* 使用 mod 关键字来创建新模块，后面紧跟着模块名称
+* 模块可以嵌套，这里嵌套的原因是招待客人和服务都发生在前厅，因此我们的代码模拟了真实场景
+* 模块中可以定义各种 Rust 类型，例如函数、结构体、枚举、特征等
+* 所有模块均定义在同一个文件中
+
+类似上述代码中所做的，使用模块，我们就能将功能相关的代码组织到一起，然后通过一个模块名称来说明这些代码为何被组织在一起。这样其它程序员在使用你的模块时，就可以更快地理解和上手。（namespace）
+
+#### 模块树
+模块树描述了这个crate包的整体代码结构，即由哪些模块和模块下的子模块组成。
+值得注意的是，crate树上的模块==不一定只是==代表是src下的文件，它也能是代码内生成的模块。
+
+包（crate）根：src/main.rs 和 src/lib.rs。因为他们是crate的根文件，作为一个模块，处于整个crate的树结构中的根部
+```
+crate
+ └── front_of_house
+     ├── hosting
+     │   ├── add_to_waitlist
+     │   └── seat_at_table
+     └── serving
+         ├── take_order
+         ├── serve_order
+         └── take_payment
+
+```
+
+#### 用路径引用模块
+根据整个包的模块树，我们就能很容易知道某个模块的具体路径
+和文件路径一致，路径分为两类：
+* 绝对路径：从包根开始，路径名以包名或crate开头
+* 相对路径：从当前的模块所在的模块开始（self，可省略），然后从同级的其他模块开始，以 self，super 或当前模块的标识符作为开头
+```rust
+mod front_of_house {
+    mod hosting {
+        fn add_to_waitlist() {}
+    }
+}
+
+pub fn eat_at_restaurant() {
+    // 绝对路径
+    crate::front_of_house::hosting::add_to_waitlist();
+
+    // 相对路径
+    front_of_house::hosting::add_to_waitlist();
+}
+```
+#### 代码可见性
+类比class中public，private等
+我们运行上文的代码，会无情报错。原因在于，hosting是私有的。也就是别的模块并不能调用这个函数
+而编译器并没有报错说front_of_house是私有的，==说明同一作用域（模块，在这里是包根模块）下的两个模块互相之间是能随意访问的。==
+Rust 出于安全的考虑，默认情况下，所有的类型都是私有化的，包括函数、方法、结构体、枚举、常量，模块本身也是私有化的。在 Rust 中，父模块完全无法访问子模块中的私有项，但是子模块却可以访问父模块、父父..模块的私有项。
+**pub关键字**
+通过这个关键字就能改变rust的默认private可见性，从而能被其他模块引用，调用
+```rust
+mod front_of_house {
+    pub mod hosting {
+        pub fn add_to_waitlist() {}
+    }
+}
+```
+
+#### 用super引用模块
+super 代表的是父模块为开始的引用方式，非常类似于文件系统中的 .. 语法：../a/b 
+```rust
+fn serve_order() {}
+
+// 厨房模块
+mod back_of_house {
+    fn fix_incorrect_order() {
+        cook_order();
+        super::serve_order();
+    }
+
+    fn cook_order() {}
+}
+```
+##### 用self引用模块
+self 其实就是引用自身模块中的项，在很多时候是多此一举的，因为你可以直接在当前模块中引用旗下的子模块或调用同在当前模块下的函数，而不加self
+```rust
+fn serve_order() {
+    self::back_of_house::cook_order()
+}
+
+mod back_of_house {
+    fn fix_incorrect_order() {
+        cook_order();
+        crate::serve_order();
+    }
+
+    pub fn cook_order() {}
+}
+```
+
+#### 结构体和枚举的可见性
+* 将结构体设置为 pub，但它的所有字段依然是私有的
+* 将枚举设置为 pub，它的所有字段也将对外可见
+>原因在于，枚举和结构体的使用方式不一样。如果枚举的成员对外不可见，那该枚举将一点用都没有，因此枚举成员的可见性自动跟枚举可见性保持一致，这样可以简化用户的使用。
+>而结构体的应用场景比较复杂，其中的字段也往往部分在 A 处被使用，部分在 B 处被使用，因此无法确定成员的可见性，那索性就设置为全部不可见，将选择权交给程序员。
+
+#### 模块与文件分离
+之前的例子中，我们所有的模块都定义在 src/lib.rs 中，但是当模块变多或者变大时，需要将模块放入一个单独的文件中，让代码更好维护。
+现在，把 front_of_house 前厅分离出来，放入一个单独的文件中 src/front_of_house.rs：
+```rust
+pub mod hosting {
+    pub fn add_to_waitlist() {}
+}
+```
+将以下代码留在 src/lib.rs 中：
+```rust
+mod front_of_house;
+
+pub use crate::front_of_house::hosting;
+
+pub fn eat_at_restaurant() {
+    hosting::add_to_waitlist();
+    hosting::add_to_waitlist();
+    hosting::add_to_waitlist();
+}
+```
+mod front_of_house; 告诉 Rust 从另一个和模块 front_of_house 同名的文件中加载该模块的内容
+>我们可以理解成在lib.rs中我们声明了一个模块front_of_house，在同名文件中实现它的内容（和c++的头文件类似）
+使用绝对路径的方式来引用 hosting 模块：crate::front_of_house::hosting;
+>用use将hosting模块加载到当前的crate根模块（作用域）上。于是在eat_at_restaurant就能直接hosting::来调用其中的函数
+
+**将模块文件->文件夹，具体各个子模块的实现也变为.rs文件来分别实现**
+当一个模块有许多子模块时，我们也可以通过文件夹的方式来组织这些子模块。
+在上述例子中，我们可以创建一个目录 front_of_house，然后在文件夹里创建一个 hosting.rs 文件，hosting.rs 文件现在就剩下：
+```rust
+pub fn add_to_waitlist() {}
+```
+如果将**文件夹作为一个模块**，我们需要进行==显式指定暴露哪些子模块==。按照上述的报错信息，我们有两种方法：
+* 在 front_of_house 目录里创建一个 mod.rs，如果你使用的 rustc 版本 1.30 之前，这是唯一的方法
+* 在 front_of_house **同级**目录里创建一个与模块（目录）同名的 rs 文件 front_of_house.rs，在新版本里，更建议使用这样的命名方式来避免项目中存在大量同名的 mod.rs 文件（ Python 点了个 踩）。
+第二种方法形成的树状图：
+```
+src
+├── front_of_house
+│   └── hosting.rs
+├── front_of_house.rs
+└── lib.rs
+```
+然后，你需要在(mod.rs 或 front_of_house.rs)定义你的子模块（子模块名与子模块的内容的文件名相同）
+```rust
+//在mod.rs或front_of_house.rs文件中的内容
+pub mod hosting;
+```
