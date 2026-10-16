@@ -637,7 +637,7 @@ fn main() {
 ##### 连接字符串
 1. 使用 + 或者 += 连接字符串
 
-使用 + 或者 += 连接字符串，要求**右边的参数必须为字符串的切片引用（Slice）类型**。其实当调用 + 的操作符时，相当于调用了 std::string 标准库中的 add() 方法，这里 add() 方法的第二个参数是一个引用的类型。因此我们在使用 + 时， 必须传递切片引用类型。不能直接传递 String 类型。+ 是**返回一个新的字符串，所以变量声明可以不需要 mut 关键字修饰。**
+使用 + 或者 += 连接字符串，要求**右边的参数必须为字符串的切片引用（Slice）类型**。其实当调用 + 的操作符时，相当于调用了 std::string 标准库中的 add() 方法，这里 add() 方法的第二个参数是一个引用的类型。因此我们在使用 + 时， 必须传递切片引用类型。不能直接传递 String 类型。==+== 是**返回一个新的字符串，所以变量声明可以不需要 mut 关键字修饰。**而 ==+=== 不是，+=是直接修改原字符串，所以需要mut模式
 
 ==所以我们可以连+==
 ```rust
@@ -3261,4 +3261,41 @@ src
 ```rust
 //在mod.rs或front_of_house.rs文件中的内容
 pub mod hosting;
+```
+
+### use引用
+==重要辨析！use只是引用了模块的名字，并不是打开了这个模块从而可以直接使用内部的公开子模块和函数。它更类似于让这处作用域知道这个名字，然后根据这个名字去找模块，但不会打开模块==
+
+**use+相对路径 or 绝对路径**
+use也可以只**引用**某个模块下的**函数**，只需要路径精确到某个函数即可
+如果需要引入多个函数，使用 **{}** 功能
+```rust
+use std::collections::{HashMap,BTreeMap,HashSet};
+```
+==use ... as ...== 可以将引入的模块/函数改为别名来在当前的模块下使用
+==**pub** use ....== 由于use引用后，引用的模块和函数默认的可见性为private，因此如果你需要在引用到的模块之外的模块使用这些你重引入的模块或函数，你就需要pub来重新设置其可见性为public。
+```rust
+mod delicious_snacks {
+    //以下的PEAR和CUCUMBER被引入到delicious_snacks模块作用域下，但我模块外的函数main不能直接用delicious_snacks::fruit等，因为重引用出来的PEAR，CUCUMBER是private。所以必须在use前加pub
+    pub use self::fruits::PEAR as fruit;
+    pub use self::veggies::CUCUMBER as veggie;
+
+    pub mod fruits {
+        pub const PEAR: &'static str = "Pear";
+        pub const APPLE: &'static str = "Apple";
+    }
+
+    pub mod veggies {
+        pub const CUCUMBER: &'static str = "Cucumber";
+        pub const CARROT: &'static str = "Carrot";
+    }
+}
+
+fn main() {
+    println!(
+        "favorite snacks: {} and {}",
+        delicious_snacks::fruit,
+        delicious_snacks::veggie
+    );
+}
 ```
