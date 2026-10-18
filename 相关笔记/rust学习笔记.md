@@ -3299,3 +3299,279 @@ fn main() {
     );
 }
 ```
+
+## closure闭包
+**闭包**是一种匿名函数，它可以赋值给变量也可以作为参数传递给其它函数，不同于函数的是，它允许捕获调用者作用域中的值
+```rust
+fn main() {
+   let x = 1;
+   let sum = |y| x + y;
+
+    assert_eq!(3, sum(2));
+}
+```
+上面的代码展示了非常简单的闭包 sum，它拥有一个入参 y，同时捕获了作用域中的 x 的值，因此调用 sum(2) 意味着将 2（参数 y）跟 1（x）进行相加，最终返回它们的和：3
+对于闭包来说一个显著的作用就是简化代码，以及方便修改代码和调试。
+### 一个样例
+```rust
+use std::thread;
+use std::time::Duration;
+
+// 开始健身，好累，我得发出声音：muuuu...
+fn muuuuu(intensity: u32) -> u32 {
+    println!("muuuu.....");
+    thread::sleep(Duration::from_secs(2));
+    intensity
+}
+
+fn workout(intensity: u32, random_number: u32) {
+    let action = muuuuu;
+    if intensity < 25 {
+        println!(
+            "今天活力满满, 先做 {} 个俯卧撑!",
+            action(intensity)
+        );
+        println!(
+            "旁边有妹子在看，俯卧撑太low, 再来 {} 组卧推!",
+            action(intensity)
+        );
+    } else if random_number == 3 {
+        println!("昨天练过度了，今天还是休息下吧！");
+    } else {
+        println!(
+            "昨天练过度了，今天干干有氧, 跑步 {} 分钟!",
+            action(intensity)
+        );
+    }
+}
+
+fn main() {
+    // 强度
+    let intensity = 10;
+    // 随机值用来决定某个选择
+    let random_number = 7;
+
+    // 开始健身
+    workout(intensity, random_number);
+}
+```
+假设我们如果想修改这个action变量传入的intensity强度（将workout的action(intensity)改为action(intensity+1)，那么我们就需要修改很多行）
+
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn workout(intensity: u32, random_number: u32) {
+    let action = || {
+        println!("muuuu.....");
+        thread::sleep(Duration::from_secs(2));
+        intensity
+    };
+
+    if intensity < 25 {
+        println!(
+            "今天活力满满，先做 {} 个俯卧撑!",
+            action()
+        );
+        println!(
+            "旁边有妹子在看，俯卧撑太low，再来 {} 组卧推!",
+            action()
+        );
+    } else if random_number == 3 {
+        println!("昨天练过度了，今天还是休息下吧！");
+    } else {
+        println!(
+            "昨天练过度了，今天干干有氧，跑步 {} 分钟!",
+            action()
+        );
+    }
+}
+
+fn main() {
+    // 动作次数
+    let intensity = 10;
+    // 随机值用来决定某个选择
+    let random_number = 7;
+
+    // 开始健身
+    workout(intensity, random_number);
+}
+```
+在这里的action就是一个定义的闭包函数，因为匿名，所以不需要修改函数名；而由于这行代码可以直接获取workout函数作用域内的intensity，所以不像修改前的action那样，在有需要时每行修改传入的intensity问题，只需要修改这个闭包内部的intensity即可。
+
+### 函数中闭包声明
+```rust
+|param1, param2,...| {
+    语句1;
+    语句2;
+    返回表达式
+}
+```
+如果闭包函数只有一个返回表达式，可以这么声明：
+```rust
+|param1| 返回表达式
+```
+* 闭包中最后一行表达式返回的值，就是闭包执行后的返回值，因此 action() 调用返回了 intensity 的值 10
+* let action = ||... 只是把闭包赋值给变量 action，并不是把闭包执行后的结果赋值给 action，因此这里 action 就相当于闭包函数，可以跟函数一样进行调用：action()
+
+### 结构体中的闭包
+假设我们要实现一个简易缓存，功能是获取一个值，然后将其缓存起来，那么可以这样设计：
+* 一个闭包用于获取值
+* 一个变量，用于存储该值
+```rust
+struct Cacher<T>
+where
+    T: Fn(u32) -> u32,
+{
+    query: T,
+    value: Option<u32>,
+}
+```
+Fn(u32) -> u32 是一个特征，用来表示 T 是一个闭包类型
+其实 Fn 特征不仅仅适用于闭包，还适用于函数，因此上面的 query 字段除了使用闭包作为值外，还能使用一个具名的函数来作为它的值
+当然，这说明我们在创建Cacher结构体时同样需要将一个闭包传给query
+
+### 闭包对内存的影响
+当闭包从环境中捕获一个值（它能捕获作用域中的值）时，会分配内存去存储这些值。对于有些场景来说，这种额外的内存分配会成为一种负担。与之相比，函数就不会去捕获这些环境值，因此定义和使用函数不会拥有这种内存负担。
+
+### 3种闭包特征
+闭包捕获变量有三种途径，恰好对应函数参数的三种传入方式：转移所有权、可变借用、不可变借用，因此相应的 Fn 特征也有三种：
+#### FnOnce
+该类型的闭包会拿走被捕获变量的所有权
+仅实现 FnOnce 特征的闭包在调用时会转移所有权，所以显然不能对已失去所有权的闭包变量进行二次调用：所以下面这段代码会报错
+```rust
+fn fn_once<F>(func: F)
+where
+    F: FnOnce(usize) -> bool,
+{
+    println!("{}", func(3));
+    println!("{}", func(4));//func中的x变量所有权在上一行的func中，由于显式说明了func是FnOnce特征，编译器默认该闭包被传入了某些环境变量并且所有权转移，于是它自认为不允许调用第二次（虽然理论上可以调用第二次）
+}
+
+fn main() {
+    let x = vec![1, 2, 3];
+    fn_once(|z|{z == x.len()})
+}
+```
+
+#### FnMut
+它以可变借用的方式捕获了环境中的值，因此可以修改该值
+想要在闭包内部捕获可变借用，需要把该闭包声明为可变类型，也就是 update_string 要修改为 mut update_string：
+```rust
+fn main() {
+    let mut s = String::new();
+
+    let mut update_string =  |str| s.push_str(str);
+    update_string("hello");
+
+    println!("{:?}",s);
+}
+```
+
+#### Fn
+以不可变借用的方式捕获环境中的值或变量。
+
+#### move和闭包三大特征的联系与区别
+==值得注意的是，一个闭包会绑定哪一种特征，是通过编译器检查闭包中的操作确定的，而不是看他们捕获变量的方式。==
+比如：一个闭包做了追加环境变量中的字符串操作，那么就是FnMut特征。如果绑定字符串给闭包内的新变量，那么就是FnOnce特征。如果只是打印一个环境变量，那么就是Fn特征
+而move则是声明后者。但这样并不会实际上影响它的特征是什么。
+```rust
+fn main() {
+    let s = String::new();
+
+    let update_string =  move || println!("{}",s);
+
+    exec(update_string);
+}
+
+fn exec<F: Fn()>(f: F)  {
+    f()
+}
+```
+当我们用了move时，编译器最多是在原本给update_string的Fn特征基础上，额外绑定了FnOnce特征。但这不影响它有Fn特征。因此这段代码能运行。
+
+### 闭包以返回值的形式返回
+类比特征对象那节。由于闭包不同，他们的类型就不同，因此我们只能按照特征对象的方式来返回，也就是返回&Fn()或者Box\<dyn Fn()>
+例外：你返回的闭包只有**一种**（类型一致），这时你可以用T泛型做特征约束的方式返回，或者，返回impl Fn等
+
+## iterator迭代器
+迭代器允许我们迭代一个连续的集合，例如数组、动态数组 Vec、HashMap 等，在此过程中，只需关心集合中的元素如何处理，而无需关心如何开始、如何结束、按照什么样的索引去访问等问题
+### 传统for循环和迭代器的区别
+这种区别最主要体现在是否采用索引的方式迭代。
+```rust
+let arr = [1, 2, 3];
+for v in arr {
+    println!("{}",v);
+}
+```
+我们在rust的for就能发现，rust中这么使用本质上是将arr当作一个迭代器一次迭代集合中的元素。
+所以本质上for循环更像是迭代器的语法糖（比如for i in 1..2等语句也是将1..2序列当作一个迭代器）
+当然，数组等本身并不是迭代器，而是实现了IntoIterator特征。
+IntoIterator 特征拥有一个 into_iter 方法，因此我们还可以显式的把数组转换成迭代器：
+```rust
+let arr = [1, 2, 3];
+for v in arr.into_iter() {
+    println!("{}", v);
+}
+```
+迭代器是函数语言的核心特性，它赋予了 Rust 远超于循环的强大表达能力.
+### 惰性初始化
+在 Rust 中，迭代器是惰性的，==意味着如果你不使用它，那么它将不会发生任何事==
+```rust
+let v1 = vec![1, 2, 3];
+
+let v1_iter = v1.iter();
+
+for val in v1_iter {
+    println!("{}", val);
+}
+```
+比如这段代码，v1_iter是v1的迭代器，但是不会有任何迭代行为发生，直到在for循环中使用了这个迭代器，才会开始迭代
+
+### next方法
+对于 for 如何遍历迭代器，还有一个问题，它如何取出迭代器中的元素？
+实际上是迭代器类型实现了Iterator特征
+```rust
+pub trait Iterator {
+    type Item;
+
+    fn next(&mut self) -> Option<Self::Item>;
+
+    // 省略其余有默认实现的方法
+}
+```
+这个特征内部存在next方法。因此我们同样也能借此依次调用获取迭代器中的集合
+==next 方法对迭代器的遍历是消耗性的，每次消耗它一个元素，最终迭代器中将没有任何元素，只能返回 None。==
+```rust
+fn main() {
+    let arr = [1, 2, 3];
+    let mut arr_iter = arr.into_iter();
+
+    assert_eq!(arr_iter.next(), Some(1));
+    assert_eq!(arr_iter.next(), Some(2));
+    assert_eq!(arr_iter.next(), Some(3));
+    assert_eq!(arr_iter.next(), None);
+}
+```
+
+### IntoIterator特征
+其中存在着3中方法
+**into_iter**方法会发生所有权的转移。
+**iter**方法是借用
+**iter_mut**方法是可变借用
+
+>IntoIterator和Iterator二者的区别：前者是表示能够转换为迭代器，而后者实现后才代表这是一个迭代器，能够使用next方法
+
+### 消费者与适配器
+消费者是迭代器上的方法，它会消费掉迭代器中的元素，然后返回其类型的值，这些消费者都有一个共同的特点：在它们的定义中，都依赖 next 方法来消费元素，因此这也是为什么迭代器要实现 Iterator 特征，而该特征必须要实现 next 方法的原因。
+#### 消费者适配器
+只要迭代器上的某个方法 A 在其内部调用了 next 方法，那么 A 就被称为消费者适配器：因为 next 方法会消耗掉迭代器上的元素，所以方法 A 的调用也会消耗掉迭代器上的元素。
+#### 迭代器适配器
+既然消费者适配器是消费掉迭代器，然后返回一个值。那么迭代器适配器，顾名思义，会返回一个新的迭代器，这是实现链式方法调用的关键：v.iter().map().filter()...
+与消费者适配器不同，迭代器适配器是**惰性**的，意味着你需要一个**消费者适配器来收尾**，最终将迭代器转换成一个具体的值：
+```rust
+let v1: Vec<i32> = vec![1, 2, 3];
+
+v1.iter().map(|x| x + 1);
+
+```
