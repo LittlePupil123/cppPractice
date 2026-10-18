@@ -3572,6 +3572,56 @@ fn main() {
 ```rust
 let v1: Vec<i32> = vec![1, 2, 3];
 
-v1.iter().map(|x| x + 1);
+let v2: Vec<_> = v1.iter().map(|x| x + 1).collect();
+
+assert_eq!(v2, vec![2, 3, 4]);
+```
+#### collect
+在上述代码的最后，我们采用的消费者适配器正是collect方法
+使用它可以将一个迭代器中的元素收集到指定类型中，这里我们为 v2 标注了 Vec<_> 类型，就是为了告诉 collect：请把迭代器中的元素消费掉，然后把值收集成 Vec<_> 类型，至于为何使用 _，因为编译器会帮我们自动推导。
+
+map 会对迭代器中的每一个值进行一系列操作，然后把该值转换成另外一个新值，该操作是通过闭包 |x| x + 1 来完成：最终迭代器中的每个值都增加了
+
+#### 闭包作为适配器参数
+如上述map的用法一样，闭包能够作为参数传入适配器中
+
+### 实现Iterator特征
+一个样例：
+```rust
+struct Counter {
+    count: u32,
+}  //创建一个Counter结构体
+
+impl Counter {   //为Counter做一个初始化关联函数
+    fn new() -> Counter {
+        Counter { count: 0 }
+    }
+}
+
+impl Iterator for Counter { //开始实现Iterator特征，以及下列的next方法
+    type Item = u32; //将该特征的关联类型设为u32
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.count < 5 {
+            self.count += 1;
+            Some(self.count)
+        } else {
+            None
+        }
+    }
+}
 
 ```
+而我们一般来说只需要实现next方法，因为其他方法**都有默认实现**
+
+#### enumerate方法
+```rust
+let v = vec![1u64, 2, 3, 4, 5, 6];
+for (i,v) in v.iter().enumerate() {
+    println!("第{}个值是{}",i,v)
+}
+```
+我们会发现，enumerate方法是一个迭代器适配器，它会生成一个迭代器，其中每个元素的结构为：（索引，元素）
+
+### 迭代器的性能
+使用迭代器进行迭代会比采用for循环+索引的方式迭代更为方便，并且更为快速，性能开销更小，所以我们尽可能采用迭代器进行。
