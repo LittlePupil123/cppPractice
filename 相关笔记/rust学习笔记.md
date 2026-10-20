@@ -3623,5 +3623,432 @@ for (i,v) in v.iter().enumerate() {
 ```
 我们会发现，enumerate方法是一个迭代器适配器，它会生成一个迭代器，其中每个元素的结构为：（索引，元素）
 
+#### product()方法
+实现迭代器累乘，消费者适配器
+
+#### filter方法
+对迭代器进行迭代，并过滤掉不符合给定条件的元素，返回过滤后的迭代器，迭代器适配器。
+```rust
+ map.values().filter(|&&v| v == value).count()
+```
+
 ### 迭代器的性能
 使用迭代器进行迭代会比采用for循环+索引的方式迭代更为方便，并且更为快速，性能开销更小，所以我们尽可能采用迭代器进行。
+
+## 类型转换
+
+### as转换
+```rust
+fn main() {
+  let a: i32 = 10;
+  let b: u16 = 100;
+
+  if a < (b as i32) {
+    println!("Ten is less than one hundred.");
+  }
+}
+```
+为什么我们不考虑将i32转换为u16呢？因为i32能表示的范围更大，在转换时如果强制将这些范围外的数转换为更小字节的类型，就会出现转换后的数据出现变化造成bug。
+
+============================
+一些常见的转换
+```rust
+fn main() {
+   let a = 3.1 as i8;
+   let b = 100_i8 as i32;
+   let c = 'a' as u8; // 将字符'a'转换为整数，97
+
+   println!("{},{},{}",a,b,c)
+}
+```
+内存地址转换为指针：
+```rust
+let mut values: [i32; 2] = [1, 2];
+let p1: *mut i32 = values.as_mut_ptr();
+let first_address = p1 as usize; // 将p1内存地址转换为一个整数
+let second_address = first_address + 4; // 4 == std::mem::size_of::<i32>()，i32类型占用4个字节，因此将内存地址 + 4
+let p2 = second_address as *mut i32; // 访问该地址指向的下一个整数p2
+unsafe {
+    *p2 += 1;
+}
+assert_eq!(values[1], 3);
+```
+
+================================
+转换不具有传递性 就算 e as U1 as U2 是合法的，也不能说明 e as U2 是合法的（e 不能直接转换成 U2）
+
+### TryInto转换
+在一些场景中，使用 as 关键字会有比较大的限制。如果你想要在类型转换上拥有完全的控制而不依赖内置的转换，例如处理转换错误，那么可以使用 TryInto
+```rust
+use std::convert::TryInto;
+
+fn main() {
+   let a: u8 = 10;
+   let b: u16 = 1500;
+
+   let b_: u8 = b.try_into().unwrap();
+
+   if a < b_ {
+     println!("Ten is less than one hundred.");
+   }
+}
+```
+TryInto在prelude包中，因此这里的use引用包可以不使用
+try_into 会尝试进行一次转换，并返回一个 Result，此时就可以对其进行相应的错误处理。由于我们的例子只是为了快速测试，因此使用了 unwrap 方法
+try_into 转换会捕获大类型向小类型转换时导致的溢出错误：
+```rust
+fn main() {
+    let b: i16 = 1500;
+
+    let b_: u8 = match b.try_into() {
+        Ok(b1) => b1,
+        Err(e) => {
+            println!("{:?}", e.to_string());
+            0
+        }
+    };
+}
+```
+### 通用类型转换
+无论是as，还是TryInto，都会存在一个问题，那就是这种类型的转换不是通用的，比如结构体与结构体之间就无法用as和TryInto转换。但rust对于通用的任意类型间的转换存在一套独有的机制
+#### 强制类型转换
+在某些情况下，类型是可以进行隐式强制转换的
+首先，==在匹配特征时，不会做任何强制转换(除了方法)。一个类型 T 可以强制转换为 U，不代表 impl T 可以强制转换为 impl U==，例如下面的代码就无法通过编译检查：
+```rust
+trait Trait {}
+
+fn foo<X: Trait>(t: X) {}
+
+impl<'a> Trait for &'a i32 {}
+
+fn main() {
+    let t: &mut i32 = &mut 0;
+    foo(t);
+}
+```
+```
+报错结果：
+error[E0277]: the trait bound `&mut i32: Trait` is not satisfied
+--> src/main.rs:9:9
+|
+9 |     foo(t);
+|         ^ the trait `Trait` is not implemented for `&mut i32`
+|
+= help: the following implementations were found:
+        <&'a i32 as Trait>
+= note: `Trait` is implemented for `&i32`, but not for `&mut i32`
+
+```
+&i32 实现了特征 Trait， &mut i32 可以转换为 &i32，但是 &mut i32 依然无法作为 Trait 来使用
+
+#### 点操作符
+todo!()
+
+## 智能指针
+>**补充堆栈知识**
+>栈内存从高位地址向下增长，且栈内存是连续分配的，一般来说操作系统对栈内存的大小都有限制，因此 C 语言中无法创建任意长度的数组。在 Rust 中，main 线程的栈大小是 8MB，普通线程是 2MB，在函数调用时会在其中创建一个临时栈空间，调用结束后 Rust 会让这个栈空间里的对象自动进入 Drop 流程，最后栈顶指针自动移动到上一个调用栈顶，无需程序员手动干预，因而栈内存申请和释放是非常高效的。
+>
+>与栈相反，堆上内存则是从低位地址向上增长，堆内存通常只受物理内存限制，而且通常是不连续的，因此从性能的角度看，栈往往比堆更高。
+
+### Box\<T>堆对象分配
+>Box\<T> 允许你将一个值分配到堆上，然后在栈上保留一个智能指针指向堆上的数据。
+
+相比其它语言，Rust 堆上对象还有一个特殊之处，它们都拥有一个所有者，因此受所有权规则的限制：当赋值时，发生的是所有权的转移（只需浅拷贝栈上的引用或智能指针即可）
+
+**堆栈性能**
+* 小型数据，在栈上的分配性能和读取性能都要比堆上高
+* 中型数据，栈上分配性能高，但是读取性能和堆上并无区别，因为无法利用寄存器或 CPU 高速缓存，最终还是要经过一次内存寻址
+* 大型数据，只建议在堆上分配和使用
+
+#### Box使用场景
+Box 相比其它智能指针，功能较为单一，可以在以下场景中使用它：
+* 特意的将数据分配在堆上
+* 数据较大时，又不想在转移所有权时进行数据拷贝
+* 类型的大小在编译期无法确定，但是我们又需要固定大小的类型时
+* 特征对象，用于说明对象实现了一个特征，而不是某个特定的类型
+
+**数据存储在堆上**
+```rust
+fn main() {
+    let a = Box::new(3);
+    println!("a = {}", a); // a = 3
+
+    // 下面一行代码将报错
+    // let b = a + 1; // cannot add `{integer}` to `Box<{integer}>`
+}
+```
+这串代码会返回一个指向这个存有3的堆内存地址的指针给a
+
+**避免栈上的数据拷贝**
+当**栈上**数据转移所有权时，实际上是把数据**拷贝**了一份，最终新旧变量各自拥有不同的数据，因此所有权并未转移。
+
+而**堆上**则不然，底层数据并不会被拷贝，转移所有权仅仅是复制一份栈中的指针，再将新的指针赋予新的变量，然后让拥有旧指针的变量失效，最终完成了所有权的**转移**：
+所以可以通过将数据用box声明在栈上解决栈上数据自动复制的问题。
+
+**将DST -> Sized类型**
+Rust 需要在编译时知道类型占用多少空间，如果一种类型在编译时无法知道具体的大小，那么被称为动态大小类型 DST。
+其中一种无法在编译时知道大小的类型是递归类型：在类型定义中又使用到了自身，或者说该类型的值的一部分可以是相同类型的其它值，这种值的嵌套理论上可以无限进行下去，所以 Rust 不知道递归类型需要多少空间：
+```rust
+enum List {
+    Cons(i32, List),
+    Nil,
+}
+```
+以上就是函数式语言中常见的 Cons List，它的每个节点包含一个 i32 值，还包含了一个新的 List，因此这种嵌套可以无限进行下去，Rust 认为该类型是一个 DST 类型，并给予报错
+所以可以使用Box来包装
+```rust
+enum List {
+    Cons(i32, Box<List>),
+    Nil,
+}
+```
+将 List 存储到堆上，然后使用一个智能指针指向它，即可完成从 DST 到 Sized 类型(固定大小类型)的华丽转变。
+
+**特征对象**
+详情可去看特征对象那节。本质上特征对象用Box包装也是因为要将DST转换为sized类型。
+
+#### Box::leak()
+Box 中还提供了一个非常有用的关联函数：Box::leak，它可以消费掉 Box 并且强制目标值从内存中泄漏
+例如，你可以把一个 String 类型，变成一个 'static 生命周期的 &str 类型：
+```rust
+fn main() {
+   let s = gen_static_str();
+   println!("{}", s);
+}
+
+fn gen_static_str() -> &'static str{
+    let mut s = String::new();
+    s.push_str("hello, world");
+
+    Box::leak(s.into_boxed_str())
+}
+```
+在之前的代码中，如果 String 创建于函数中，那么返回它的唯一方法就是转移所有权给调用者 fn move_str() -> String，而通过 Box::leak 我们不仅返回了一个 &str 字符串切片，它还是 'static 生命周期的
+在这里，只标注生命周期标签'static是无用的，因为生命周期标签并不能改变实际生命周期，但如果运行期间提前泄漏，那么就能真正转换为实际的'static生命周期,放入可执行文件中。
+
+>一个简单的场景，**你需要一个在运行期初始化的值，但是可以全局有效，也就是和整个程序活得一样久**，那么就可以使用 Box::leak，例如有一个存储配置的结构体实例，它是在运行期动态插入内容，那么就可以将其转为全局有效，虽然 Rc/Arc 也可以实现此功能，但是 Box::leak 是性能最高的。
+
+=========================
+#### 总结
+Box 背后是调用 jemalloc 来做内存管理，所以堆上的空间无需我们的手动管理。与此类似，带 GC 的语言中的对象也是借助于 Box 概念来实现的，一切皆对象 = 一切皆 Box， 只不过我们无需自己去 Box 罢了。
+
+### Deref解引用
+何为智能指针？能不让你写出 ****s 形式的解引用，我认为就是智能：）
+智能指针的名称来源，主要就在于它实现了 Deref 和 Drop 特征，这两个特征可以智能地帮助我们节省使用上的负担：
+* Deref 可以让智能指针像引用那样工作，这样你就可以写出同时支持智能指针和引用的代码，例如 *T
+* Drop 允许你指定智能指针超出作用域后自动执行的代码，例如做一些数据清除等收尾工作
+
+#### 函数和方法中的隐式调用Deref
+对于函数和方法的传参，Rust 提供了一个极其有用的隐式转换：Deref 转换。若一个类型实现了 Deref 特征，那它的引用在传给函数或方法时，会根据参数签名来决定是否进行隐式的 Deref 转换
+例如:
+```rust
+fn main() {
+    let s = String::from("hello world");
+    display(&s)
+}
+
+fn display(s: &str) {
+    println!("{}",s);
+}
+```
+* String 实现了 Deref 特征，可以在需要时自动被转换为 &str 类型
+* &s 是一个 &String 类型，当它被传给 display 函数时，自动通过 Deref 转换成了 &str
+* 必须使用 &s 的方式来触发 Deref(仅引用类型的实参才会触发自动解引用)
+
+**连续隐式调用解引用**
+Deref 可以支持连续的隐式转换，直到找到适合的形式为止，所以才能一个引用类型就能完成向多层嵌套的引用类型的转换
+比如我有一个Box(String)类型的变量，但对其取引用可以直接传给&str参数或变量，因为编译器能自动连续解引用来获取正确的引用类型。
+
+#### Deref规则总结
+一个类型为 T 的对象 foo，如果 T: Deref\<Target=U>，那么，相关 foo 的引用 &foo 在应用的时候会自动转换为 &U
+##### 引用归一化
+译器实际上只能对 &v 形式的引用进行解引用操作
+所以Rust 会在解引用时自动把智能指针和 &&&&v 做引用归一化操作，转换成 &v 形式，最终再对 &v 进行解引用：
+* 把智能指针（比如在库中定义的，Box、Rc、Arc、Cow 等）从结构体脱壳为内部的引用类型，也就是转成结构体内部的 &v
+* 把多重&，例如 &&&&&&&v，归一成 &v
+
+#### 3种Deref特征
+* 当 T: Deref\<Target=U>，可以将 &T 转换成 &U，也就是我们之前看到的例子
+* 当 T: DerefMut\<Target=U>，可以将 &mut T 转换成 &mut U
+* 当 T: Deref\<Target=U>，可以将 &mut T 转换成 &U
+
+>注意：要实现 DerefMut 必须要先实现 Deref 特征：pub trait DerefMut: Deref
+
+=====================
+
+>T: DerefMut\<Target=U> 解读：将 &mut T 类型通过 DerefMut 特征的方法转换为 &mut U 类型，对应上例中，就是将 &mut MyBox\<String> 转换为 &mut String
+
+=========================================
+#### 总结
+**Deref** 可以说是 Rust 中最常见的**隐式类型转换**，而且它可以连续的实现如 Box\<String> -> String -> &str 的隐式转换，只要链条上的类型实现了 Deref 特征。
+
+我们也可以为自己的类型实现 Deref 特征，但是==原则上来说，只应该为自定义的智能指针实现 Deref==。例如，虽然你可以为自己的自定义数组类型实现 Deref 以避免 myArr.0[0] 的使用形式，但是 Rust 官方并不推荐这么做，特别是在你开发三方库时。
+
+### Drop释放资源
+本质delete，不过编译器会自动帮忙加drop，从而实现自动释放资源（所有权与作用域，超出作用域自动销毁），但有时也能手动加从而手动销毁
+
+#### Drop特征
+```rust
+struct HasDrop1;
+struct HasDrop2;
+impl Drop for HasDrop1 {
+    fn drop(&mut self) {
+        println!("Dropping HasDrop1!");
+    }
+}
+impl Drop for HasDrop2 {
+    fn drop(&mut self) {
+        println!("Dropping HasDrop2!");
+    }
+}
+struct HasTwoDrops {
+    one: HasDrop1,
+    two: HasDrop2,
+}
+impl Drop for HasTwoDrops {
+    fn drop(&mut self) {
+        println!("Dropping HasTwoDrops!");
+    }
+}
+
+struct Foo;
+
+impl Drop for Foo {
+    fn drop(&mut self) {
+        println!("Dropping Foo!");
+    }
+}
+
+fn main() {
+    let _x = HasTwoDrops {
+        two: HasDrop2,
+        one: HasDrop1,
+    };
+    let _foo = Foo;
+    println!("Running!");
+}
+```
+在这里我们为多个类型重写了Drop特征下的drop函数，但是我们会发现其中的Drop特征的特点：
+* Drop 特征中的 drop 方法借用了目标的可变引用，而不是拿走了所有权
+* 结构体中每个字段都有自己的 Drop
+
+#### 释放顺序
+当一个线程存在多个变量时，超出作用域后drop的顺序按照“先进后出，后进先出”的顺序销毁。即变量级别，按照逆序的方式销毁变量。
+但结构体内部的字段按照定义的顺序依次销毁。
+
+#### 手动回收
+当使用智能指针来管理锁的时候，你可能希望提前释放这个锁，然后让其它代码能及时获得锁，此时就需要提前去手动 drop
+但是在之前我们提到一个悬念，==Drop::drop 只是借用了目标值的可变引用==，所以，就算你提前调用了 drop，后面的代码依然可以使用目标值，但是这就会访问一个并不存在的值，非常不安全，好在 Rust 会阻止你：
+```rust
+#[derive(Debug)]
+struct Foo;
+
+impl Drop for Foo {
+    fn drop(&mut self) {
+        println!("Dropping Foo!")
+    }
+}
+
+fn main() {
+    let foo = Foo;
+    foo.drop();
+    println!("Running!:{:?}", foo);
+}
+```
+在drop后依然调用了foo，所以报错！
+```
+error[E0040]: explicit use of destructor method
+  --> src/main.rs:37:9
+   |
+37 |     foo.drop();
+   |     ----^^^^--
+   |     |   |
+   |     |   explicit destructor calls not allowed
+   |     help: consider using `drop` function: `drop(foo)`
+```
+编译器直接阻止了我们调用 Drop 特征的 drop 方法，原因是对于 Rust 而言，不允许显式地调用析构函数（这是一个用来清理实例的通用编程概念）。好在在报错的同时，编译器还给出了一个提示：使用 drop 函数。
+
+针对编译器提示的 drop （绝对路径是std::mem::drop()）函数：它能够拿走目标值的所有权，并真正销毁内存
+>针对Drop::drop()和std::mem::drop()的区别在于：前者是在指定的self被销毁时调用的部分（析构函数），而std::mem::drop()才是真正擦除内存数据的函数（delete语句）。这也解释为什么Drop::drop()方法必须是可变借用，而不是self，因为如果是self，那么drop函数块执行完后self被销毁，又会继续调用drop()函数变为无限执行的语句。
+
+所以我们可以将foo.drop()改为drop(foo)解决上述代码报错，提前擦除这部分内存，释放foo所有权。
+
+#### Copy特征和Drop特征互斥
+我们无法为一个类型同时实现 Copy 和 Drop 特征。因为实现了 Copy 特征的类型会被编译器隐式的复制，因此非常难以预测析构函数执行的时间和频率。因此这些实现了 Copy 的类型无法拥有析构函数。
+
+### Rc与Arc
+Rust 所有权机制要求一个值只能有一个所有者，在大多数情况下，都没有问题，但是考虑以下情况：
+* 在图数据结构中，多个边可能会拥有同一个节点，该节点直到没有边指向它时，才应该被释放清理
+* 在多线程中，多个线程可能会持有同一个数据，但是你受限于 Rust 的安全机制，无法同时获取该数据的可变引用
+为了解决此类问题，Rust 在所有权机制之外又引入了额外的措施来简化相应的实现：通过引用计数的方式，允许一个数据资源在同一时刻拥有多个所有者-------Rc和Arc来实现这个功能
+
+#### Rc\<T>
+RC，翻译就是reference count，引用类型计数器
+我们希望在**堆上分配一个对象供程序的多个部分使用且无法确定哪个部分最后一个结束时，就可以使用 Rc 成为数据值的所有者**
+比如这里有一个所有权导致的报错：
+```rust
+fn main() {
+    let s = String::from("hello, world");
+    // s在这里被转移给a
+    let a = Box::new(s);
+    // 报错！此处继续尝试将 s 转移给 b
+    let b = Box::new(s);
+}
+```
+但用Rc可解决这个问题。
+```rust
+use std::rc::Rc;
+fn main() {
+    let a = Rc::new(String::from("hello, world"));
+    let b = Rc::clone(&a);
+
+    assert_eq!(2, Rc::strong_count(&a));
+    assert_eq!(Rc::strong_count(&a), Rc::strong_count(&b))
+}
+```
+以上代码我们使用 Rc::new 创建了一个新的 Rc\<String> 智能指针并赋给变量 a，该指针指向底层的字符串数据。
+智能指针 Rc<T> 在创建时，还会将引用计数加 1，此时获取引用计数的关联函数 Rc::strong_count 返回的值将是 1。
+
+##### Rc::clone()
+接着，我们又使用 Rc::clone 克隆了一份智能指针 Rc\<String>，并将该智能指针的引用计数增加到 2。
+由于 a 和 b 是同一个智能指针的两个副本，因此通过它们两个获取引用计数的结果都是 2。
+这里的 clone **仅仅复制了智能指针并增加了引用计数，并没有克隆底层数据，因此 a 和 b 是共享了底层的字符串 s**，这种复制效率是非常高的。
+
+##### 观察计数变化
+使用关联函数 Rc::strong_count 可以获取当前引用计数的值，我们来观察下引用计数如何随着变量声明、释放而变化：
+```rust
+use std::rc::Rc;
+fn main() {
+        let a = Rc::new(String::from("test ref counting"));
+        println!("count after creating a = {}", Rc::strong_count(&a)); //1
+        let b =  Rc::clone(&a);
+        println!("count after creating b = {}", Rc::strong_count(&a));//2
+        {
+            let c =  Rc::clone(&a);
+            println!("count after creating c = {}", Rc::strong_count(&c));//3
+        }
+        println!("count after c goes out of scope = {}", Rc::strong_count(&a));//2
+}
+```
+* 由于a，b，c三个指针共享一个Rc底层数据，所以调用谁的引用获取计数器都是一样的。
+* 无法看到的是：当 a、b 超出作用域后，引用计数会变成 0，最终智能指针和它指向的底层字符串都会被清理释放
+
+##### 不可变引用
+Rc\<T>创建后所得的引用是不可变引用，因为rust中一个作用域内只允许存在多个不可变引用。
+但是实际开发中我们往往需要对数据进行修改，这时单独使用 Rc\<T> 无法满足我们的需求，需要配合其它数据类型来一起使用，例如内部可变性的 RefCell\<T> 类型以及互斥锁 Mutex\<T>。事实上，在多线程编程中，Arc 跟 Mutex 锁的组合使用非常常见，它们既可以让我们在不同的线程中共享数据，又允许在各个线程中对其进行修改。
+
+##### Rc总结
+* Rc/Arc 是不可变引用，你无法修改它指向的值，只能进行读取，如果要修改，需要配合后面章节的内部可变性 RefCell 或互斥锁 Mutex
+* 一旦最后一个拥有者消失，则资源会自动被回收，这个生命周期是在编译期就确定下来的
+* Rc 只能用于同一线程内部，想要用于线程之间的对象共享，你需要使用 Arc
+* Rc<T> 是一个智能指针，实现了 Deref 特征，因此你无需先解开 Rc 指针，再使用里面的 T，而是可以直接使用 T，例如上例中的 gadget1.owner.name
+
+##### Arc
+由于Rc\<T>并未实现Send特征，导致其无法在线程间安全传递。而Arc就能解决这个问题。
+>当然，还有更深层的原因：由于 Rc<T> 需要管理引用计数，但是该计数器并没有使用任何并发原语，因此无法实现原子化的计数操作，最终会导致计数错误。
+
+**Arc** 是 **Atomic Rc 的缩写**，顾名思义：原子化的 Rc\<T> 智能指针。原子化是一种并发原语，我们在后续章节会进行深入讲解，这里你只要知道它能保证我们的数据能够安全的在线程间共享即可。
+Arc 和 Rc 并没有定义在同一个模块，**Arc**通过 use std::sync::Arc 来引入，**Rc**通过 use std::rc::Rc
+但二者的api接口高度相似
+
+### Cell与RefCell
