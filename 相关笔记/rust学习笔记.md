@@ -4052,3 +4052,844 @@ Arc 和 Rc 并没有定义在同一个模块，**Arc**通过 use std::sync::Arc 
 但二者的api接口高度相似
 
 ### Cell与RefCell
+#### Cell
+Cell 和 RefCell 在功能上没有区别，区别在于 Cell<T> 适用于 T 实现 Copy 的情况
+```rust
+use std::cell::Cell;
+fn main() {
+  let c = Cell::new("asdf");
+  let one = c.get();
+  c.set("qwer");
+  let two = c.get();
+  println!("{},{}", one, two);
+}
+```
+上述代码表明了基本用法：
+set负责设置新值，get负责获取值
+而因为修改的数据对象是&str类型，实现copy特征，因此能够用Cell
+
+#### RefCell
+由于 Cell 类型针对的是实现了 Copy 特征的值类型，因此在实际开发中，Cell 使用的并不多，因为我们要解决的往往是可变、不可变引用共存导致的问题，此时就需要借助于 RefCell 来达成目的。
+对于智能指针与rust规则之间的一些差异对比：
+| Rust规则 | 智能指针规则 |
+| :------: | :-------: |
+|一个数据只能有一个拥有者 | 运用Rc和Arc时一个数据能有多个拥有者 |
+|一个作用域可变引用和不可变引用不能共存 | 运用Cell和RefCell让二者在**编译期**共存 |
+|违背规则导致编译错误 | 违背规则导致运行时panic |
+
+Rc/Arc 和 RefCell 合在一起，解决了 Rust 中严苛的所有权和借用规则带来的某些场景下难使用的问题。但是它们并不是银弹，例如 RefCell 实际上并没有解决可变引用和引用可以共存的问题，只是将报错从编译期推迟到运行时，从编译器错误变成了 panic 异常
+
+**那么为什么会存在这个智能指针？**
+而 RefCell 正是用于你确信代码是正确的，而编译器却发生了误判时。
+dude，当你又回来查这篇文章时我向你保证你肯定以前遇到过这种问题:(
+当你确信编译器误报但不知道该如何解决时，或者你有一个引用类型，需要被四处使用和修改然后导致借用关系难以管理时，都可以优先考虑使用 RefCell。
+
+#### 性能比较
+**Cell** 没有额外的性能损耗
+RefCell 其实是有一点运行期开销的，原因是它包含了一个字节大小的“借用状态”指示器，该指示器在每次运行时借用时都会被修改，进而产生一点开销。
+非要使用**内部可变性**时，首选 Cell，只有你的类型没有实现 Copy 时，才去选择 RefCell
+>何为内部可变性？简单来说，对一个不可变的值进行可变借用
+
+#### Rc与RefCell的结合使用
+前者能让一个数据拥有多个拥有者
+后者能让这个拥有者能修改这个数据。
+```rust
+use std::cell::RefCell;
+use std::rc::Rc;
+fn main() {
+    let s = Rc::new(RefCell::new("我很善变，还拥有多个主人".to_string()));
+
+    let s1 = s.clone();
+    let s2 = s.clone();
+    // let mut s2 = s.borrow_mut();
+    s2.borrow_mut().push_str(", oh yeah!");
+
+    println!("{:?}\n{:?}\n{:?}", s, s1, s2);
+}
+```
+在这里，s、s1、s2同时都指向了这个String数据。所以当使用s2.borrow_mut()修改后，s，s1，s2打印后均是修改后的值。
+
+**结合使用时的性能损耗：**这两者结合在一起使用的性能其实非常高，大致相当于没有线程安全版本的 C++ std::shared_ptr 指针，事实上，C++ 这个指针的主要开销也在于原子性这个并发原语上，毕竟线程安全在哪个语言中开销都不小。
+**内存损耗：**二者分开来说都是一个结构体，包含了2个计数器整型，1个借用状态变量，一个包裹数据变量，所以结合使用仅仅多了3个额外的变量开销。
+
+#### Cell::from_mut()
+* Cell::from_mut，该方法将 &mut T 转为 &Cell\<T>
+* Cell::as_slice_of_cells，该方法将 &Cell<[T]> 转为 &[Cell\<T>]
+
+## 引用与自引用
+常见场景，实现链表数据结构
+==极难！！！==
+### Weak与循环引用
+什么是循环引用？
+看看以下代码：
+```rust
+use crate::List::{Cons, Nil};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+#[derive(Debug)]
+enum List {
+    Cons(i32, RefCell<Rc<List>>),
+    Nil,
+}
+
+impl List {
+    fn tail(&self) -> Option<&RefCell<Rc<List>>> {
+        match self {
+            Cons(_, item) => Some(item),
+            Nil => None,
+        }
+    }
+}
+```
+解析：对这个List枚举分析，我们会Nil代表链表末尾，Cons首先存了值，还有一个指向下一个的List端点，但因为Rc,所以能够有多个端点连接向下一个节点。因为RefCell，能更换当前节点指向的下一个节点。
+例如使用这个枚举：
+```rust
+fn main() {
+    let a = Rc::new(Cons(5, RefCell::new(Rc::new(Nil))));
+
+    println!("a的初始化rc计数 = {}", Rc::strong_count(&a));
+    println!("a指向的节点 = {:?}", a.tail());
+
+    // 创建`b`到`a`的引用
+    let b = Rc::new(Cons(10, RefCell::new(Rc::clone(&a))));
+
+    println!("在b创建后，a的rc计数 = {}", Rc::strong_count(&a));
+    println!("b的初始化rc计数 = {}", Rc::strong_count(&b));
+    println!("b指向的节点 = {:?}", b.tail());
+
+    // 利用RefCell的可变性，创建了`a`到`b`的引用
+    if let Some(link) = a.tail() {
+        *link.borrow_mut() = Rc::clone(&b);
+    }
+
+    println!("在更改a后，b的rc计数 = {}", Rc::strong_count(&b));
+    println!("在更改a后，a的rc计数 = {}", Rc::strong_count(&a));
+
+    // 下面一行println!将导致循环引用
+    // 我们可怜的8MB大小的main线程栈空间将被它冲垮，最终造成栈溢出
+    // println!("a next item = {:?}", a.tail());
+}
+```
+这里分析可知，我们创建了一个循环链表。在里面a与b是互相指向的。
+![alt text](./image/loopReference.png)
+当我们去执行注释的危险代码时：
+在 main 函数结束前，a 和 b 的引用计数均是 2，随后 b 触发 Drop，此时引用计数会变为 1，并不会归 0，因此 b 所指向内存不会被释放，同理可得 a 指向的内存也不会被释放，最终发生了内存泄漏。
+
+同时，如果执行注释的代码时
+{:?}会执行尝试打印内部详细的全部字段，于是就会出现一直打印(打印a的全部字段，返现有b，打印b的全部字段，发现有a....)
+```
+RefCell { value: Cons(5, RefCell { value: Cons(10, RefCell { value: Cons(5, RefCell { value: Cons(10, RefCell { value: Cons(5, RefCell { value: Cons(10, RefCell {...无穷无尽
+```
+于是最终main的栈内存被占满，stack overflow
+这里体现的就是rust可能会出现的循环引用问题
+
+#### Weak
+那么我们面对实现这样的功能，我们采取Weak
+Weak 非常类似于 Rc，但是与 Rc 持有所有权不同，Weak 不持有所有权，它仅仅保存一份指向数据的弱引用：如果你想要访问数据，需要通过 Weak 指针的 upgrade 方法实现，该方法返回一个类型为Option\<Rc\<T>> 的值。
+>何为弱引用？就是不保证引用关系依然存在，如果不存在，就返回一个 None
+>为什么弱引用能解决这点？因为Rc等clone时创建了强引用计数，而对于Rc指向的底层数据销毁的时机是出现在**强引用计数**清零的时候。而weak增加的是弱引用计数器，于是当main结束，a，b销毁，强引用计数器归零，（即使弱引用计数器是1），堆上对应的数据依旧还是被销毁，从而解决了内存泄漏
+
+##### Weak和Rc之间的区别
+| weak | Rc |
+| :---: | :---: |
+|不计数(强引用) | 引用计数 |
+| 不拥有所有权 | 拥有值的所有权 |
+| 不阻止值被释放(drop) | 所有权计数归零，才能 drop |
+| 引用的值存在返回 Some，不存在返回 None | 引用的值必定存在 |
+| 通过 upgrade 取到 Option<Rc<T>>，然后再取值 | 通过 Deref 自动解引用，取值无需任何操作 |
+
+>通过Weak这样的特征我们能用在以下的场景内防止内存泄漏：
+>* 持有一个 Rc 对象的临时引用，并且不在乎引用的值是否依然存在
+>* 阻止 Rc 导致的循环引用，因为 Rc 的所有权机制，会导致多个 Rc 都无法计数归零
+
+##### 总结Weak
+Weak 通过 use std::rc::Weak 来引入，它具有以下特点:
+
+* 可访问，但没有所有权，不增加引用计数，因此不会影响被引用值的释放回收
+* 可由 Rc\<T> 调用 downgrade 方法转换成 Weak\<T>
+* Weak\<T> 可使用 upgrade 方法转换成 Option\<Rc<T>>，如果资源已经被释放，则 Option 的值是 None
+* 常用于解决循环引用的问题
+
+```rust
+use std::rc::Rc;
+fn main() {
+    // 创建Rc，持有一个值5
+    let five = Rc::new(5);
+
+    // 通过Rc，创建一个Weak指针
+    let weak_five = Rc::downgrade(&five);
+
+    // Weak引用的资源依然存在，取到值5
+    let strong_five: Option<Rc<_>> = weak_five.upgrade();
+    assert_eq!(*strong_five.unwrap(), 5);
+
+    // 手动释放资源`five`
+    drop(five);
+
+    // Weak引用的资源已不存在，因此返回None
+    let strong_five: Option<Rc<_>> = weak_five.upgrade();
+    assert_eq!(strong_five, None);
+}
+```
+
+### 结构体自引用
+举个例：
+```rust
+struct SelfRef<'a> {
+    value: String,
+
+    // 该引用指向上面的value
+    pointer_to_value: &'a str,
+}
+```
+结构体引用类型是自己内部的字段。
+但是引用的使用和所有权的转移不能同时进行，也就是不能像下方那样声明一个实例：
+```rust
+fn main(){
+    let s = "aaa".to_string();
+    let v = SelfRef {
+        value: s,
+        pointer_to_value: &s
+    };
+}
+```
+这里会报错，因为所有权转移给value的同时并不能同时绑定一个他的引用
+
+所以我们需要如何解决？
+#### 使用Option
+```rust
+#[derive(Debug)]
+struct WhatAboutThis<'a> {
+    name: String,
+    nickname: Option<&'a str>,
+}
+
+fn main() {
+    let mut tricky = WhatAboutThis {
+        name: "Annabelle".to_string(),
+        nickname: None,
+    };
+    tricky.nickname = Some(&tricky.name[..4]);
+
+    println!("{:?}", tricky);
+}
+```
+运用Option将两者分开声明，是一种简单有效的方式。
+但是它的限制很多，比如并不能通过关联函数来新建这个结构体：
+```rust
+fn creator<'a>() -> WhatAboutThis<'a> {
+    let mut tricky = WhatAboutThis {
+        name: "Annabelle".to_string(),
+        nickname: None,
+    };
+    tricky.nickname = Some(&tricky.name[..4]);
+
+    tricky
+}
+```
+在这里会被报错，因为nickname的生命周期“Anna”引用类型之前（nickname先于&tricky.name[..4]声明），所以'a的束缚是无效的，nickname的生命周期大于了字符切片，这串代码编译失败。
+
+#### unsafe实现
+用unsafe直接使用裸指针：
+```rust
+#[derive(Debug)]
+struct SelfRef {
+    value: String,
+    pointer_to_value: *const String,
+}
+
+impl SelfRef {
+    fn new(txt: &str) -> Self {
+        SelfRef {
+            value: String::from(txt),
+            pointer_to_value: std::ptr::null(),
+        }
+    }
+
+    fn init(&mut self) {
+        let self_ref: *const String = &self.value;
+        self.pointer_to_value = self_ref;
+    }
+
+    fn value(&self) -> &str {
+        &self.value
+    }
+
+    fn pointer_to_value(&self) -> &String {
+        assert!(!self.pointer_to_value.is_null(),
+            "SelfRef::pointer_to_value called without SelfRef::init being called first");
+        unsafe { &*(self.pointer_to_value) }
+    }
+}
+
+fn main() {
+    let mut t = SelfRef::new("hello");
+    t.init();
+    // 打印值和指针地址
+    println!("{}, {:p}", t.value(), t.pointer_to_value());
+}
+```
+我们在 pointer_to_value 中直接存储裸指针，而不是 Rust 的引用，因此不再受到 Rust 借用规则和生命周期的限制，而且实现起来非常清晰、简洁。但是缺点就是，==通过指针获取值时需要使用 unsafe 代码。==
+
+=============
+也可以直接通过指针修改值，但是需要将指针中的const改为mut：
+```rust
+#[derive(Debug)]
+struct SelfRef {
+    value: String,
+    pointer_to_value: *mut String,
+}
+
+impl SelfRef {
+    fn new(txt: &str) -> Self {
+        SelfRef {
+            value: String::from(txt),
+            pointer_to_value: std::ptr::null_mut(),
+        }
+    }
+
+    fn init(&mut self) {
+        let self_ref: *mut String = &mut self.value;
+        self.pointer_to_value = self_ref;
+    }
+
+    fn value(&self) -> &str {
+        &self.value
+    }
+
+    fn pointer_to_value(&self) -> &String {
+        assert!(!self.pointer_to_value.is_null(),
+            "SelfRef::pointer_to_value called without SelfRef::init being called first");
+        unsafe { &*(self.pointer_to_value) }
+    }
+}
+
+fn main() {
+    let mut t = SelfRef::new("hello");
+    t.init();
+    println!("{}, {:p}", t.value(), t.pointer_to_value());
+
+    t.value.push_str(", world");
+    unsafe {
+        (&mut *t.pointer_to_value).push_str("!");
+    }
+
+    println!("{}, {:p}", t.value(), t.pointer_to_value());
+}
+```
+
+#### 更为安全的选择,额外使用Pin
+Pin 在后续章节会深入讲解，目前你只需要知道它可以固定住一个值，防止该值在内存中被移动
+通过开头我们知道，自引用最麻烦的就是创建引用的同时，值的所有权会被转移，而通过 Pin 就可以很好的防止这一点：
+```rust
+use std::marker::PhantomPinned;
+use std::pin::Pin;
+use std::ptr::NonNull;
+
+// 下面是一个自引用数据结构体，因为 slice 字段是一个指针，指向了 data 字段
+// 我们无法使用普通引用来实现，因为违背了 Rust 的编译规则
+// 因此，这里我们使用了一个裸指针，通过 NonNull 来确保它不会为 null
+struct Unmovable {
+    data: String,
+    slice: NonNull<String>,
+    _pin: PhantomPinned,
+}
+
+impl Unmovable {
+    // 为了确保函数返回时数据的所有权不会被转移，我们将它放在堆上，唯一的访问方式就是通过指针
+    fn new(data: String) -> Pin<Box<Self>> {
+        let res = Unmovable {
+            data,
+            // 只有在数据到位时，才创建指针，否则数据会在开始之前就被转移所有权
+            slice: NonNull::dangling(),
+            _pin: PhantomPinned,
+        };
+        let mut boxed = Box::pin(res);
+
+        let slice = NonNull::from(&boxed.data);
+        // 这里其实安全的，因为修改一个字段不会转移整个结构体的所有权
+        unsafe {
+            let mut_ref: Pin<&mut Self> = Pin::as_mut(&mut boxed);
+            Pin::get_unchecked_mut(mut_ref).slice = slice;
+        }
+        boxed
+    }
+}
+
+fn main() {
+    let unmoved = Unmovable::new("hello".to_string());
+    // 只要结构体没有被转移，那指针就应该指向正确的位置，而且我们可以随意移动指针
+    let mut still_unmoved = unmoved;
+    assert_eq!(still_unmoved.slice, NonNull::from(&still_unmoved.data));
+
+    // 因为我们的类型没有实现 `Unpin` 特征，下面这段代码将无法编译
+    // let mut new_unmoved = Unmovable::new("world".to_string());
+    // std::mem::swap(&mut *still_unmoved, &mut *new_unmoved);
+}
+```
+上面的代码也非常清晰，虽然使用了 unsafe，其实更多的是无奈之举，跟之前的 unsafe 实现完全不可同日而语。
+
+其实 Pin 在这里并没有魔法，**它也并不是实现自引用类型的主要原因，最关键的还是里面的裸指针的使用**，而 ==Pin 起到的作用就是确保我们的值不会被移走，否则指针就会指向一个错误的地址！==
+
+#### ouroboros:第三方库
+```rust
+use ouroboros::self_referencing;
+
+#[self_referencing]
+struct SelfRef {
+    value: String,
+
+    #[borrows(value)]
+    pointer_to_value: &'this str,
+}
+
+fn main(){
+    let v = SelfRefBuilder {
+        value: "aaa".to_string(),
+        pointer_to_value_builder: |value: &String| value,
+    }.build();
+
+    // 借用value值
+    let s = v.borrow_value();
+    // 借用指针
+    let p = v.borrow_pointer_to_value();
+    // value值和指针指向的值相等
+    assert_eq!(s, *p);
+}
+```
+ouroboros 使用起来并不复杂，就是需要你去按照它的方式创建结构体和引用类型：SelfRef 变成 SelfRefBuilder，引用字段从 pointer_to_value 变成 pointer_to_value_builder，并且连类型都变了。
+在使用时，通过 borrow_value 来借用 value 的值，通过 borrow_pointer_to_value 来借用 pointer_to_value 这个指针。
+
+>**缺陷**
+>破坏了原有的结构，另外就是并不是所有数据类型都支持：它需要目标值的内存地址不会改变，因此 Vec 动态数组就不适合，因为当内存空间不够时，Rust 会重新分配一块空间来存放该数组，这会导致内存地址的改变。
+
+类似的第三方库：rental，owning-ref
+
+#### Rc+RefCell
+类似解决循环引用的方法，但是会有多层结构体或枚举包裹修饰，代码可读性变低
+
+#### 最终方法：
+**你就非得把两个合起来使用吗？？？？？**
+
+## 多线程并发编程
+>并发是同一时间应对多件事情的能力 - Rob Pike
+并发和并行都是对“多任务”处理的描述，其中并发是轮流处理，而并行是同时处理。
+
+### CPU多核
+现在的个人计算机动辄拥有十来个核心（M1 Max/Intel 12 代），如果使用串行的方式那真是太低效了，因此我们把各种任务简单分成多个队列，每个队列都交给一个 CPU 核心去执行，当某个 CPU 核心没有任务时，它还能去其它核心的队列中偷任务（真·老黄牛），这样就实现了并行化处理。
+
+**单核心并发**
+在以前只有一个cpu核心，那么我们执行多任务就依靠的是并发执行。
+在 OS 级别，多线程负责管理我们的任务队列，你可以简单认为**一个线程管理着一个任务队列，然后线程之间还能根据空闲度进行任务调度**。我们的**程序只会跟 OS 线程打交道**，并不关心 CPU 到底有多少个核心，真正关心的只是 OS，当线程把任务交给 CPU 核心去执行时，如果只有一个 CPU 核心，那么它就只能同时处理一个任务。
+==正是操作系统多线程 + CPU 核心，才实现了现代化的多任务操作系统。==
+>既然单核心只能一次执行一个任务，那么让用户觉得几个任务一起运行的原因是，快速轮换处理不同的任务来实现表面上看起来同步运行。
+
+**多核心并行**
+当 CPU 核心增多到 N 时，那么同一时间就能有 N 个任务被处理，那么我们的并行度就是 N，相应的处理效率也变成了单核心的 N 倍（实际情况并没有这么高）。
+
+**多核心并发**
+当核心增多到 N 时，操作系统同时在进行的任务肯定远不止 N 个，这些任务将被放入 M 个线程队列中，接着交给 N 个 CPU 核心去执行，最后实现了 M:N 的处理模型，在这种情况下，并发与并行是同时在发生的，所有用户任务从表面来看都在并发的运行，但**实际上，同一时刻只有 N 个任务能被同时并行的处理。**
+
+如果某个系统支持两个或者多个动作的**同时存在**，那么这个系统就是一个并发系统。如果某个系统支持两个或者多个动作**同时执行**，那么这个系统就是一个并行系统。并发系统与并行系统这两个定义之间的**关键差异在于 “存在” 这个词。**
+
+>所以“并行”概念是“并发”概念的一个子集。也就是说，你可以编写一个拥有多个线程或者进程的并发程序，但如果没有多核处理器来执行这个程序，那么就不能以并行方式来运行代码。因此，凡是在求解单个问题时涉及多个执行流程的编程模式或者执行行为，都属于并发编程的范畴。
+
+### 编程语言的并发模型
+如果大家学过其它语言的多线程，可能就知道不同语言对于线程的实现可能大相径庭：
+* 由于操作系统提供了创建线程的 API，因此部分语言会直接调用该 API 来创建线程，因此最终程序内的线程数和该程序占用的操作系统线程数相等，一般称之为1:1 线程模型，例如 Rust。
+* 还有些语言在内部实现了自己的线程模型（绿色线程、协程），程序内部的 M 个线程最后会以某种映射方式使用 N 个操作系统线程去运行，因此称之为M:N 线程模型，其中 M 和 N 并没有特定的彼此限制关系。一个典型的代表就是 Go 语言。
+* 还有些语言使用了 Actor 模型，基于消息传递进行并发，例如 Erlang 语言。
+
+而绿色线程/协程的实现会显著增大运行时的大小，因此 Rust 只在标准库中提供了 1:1 的线程模型，如果你愿意牺牲一些性能来换取更精确的线程控制以及更小的线程上下文切换成本，那么可以选择 Rust 中的 M:N 模型，这些模型由三方库提供了实现，例如大名鼎鼎的 tokio。
+
+### 使用多线程
+由于多线程的代码是同时运行的，因此我们无法保证线程间的执行顺序，这会导致一些问题：
+
+* 竞态条件(race conditions)，多个线程以非一致性的顺序同时访问数据资源
+* 死锁(deadlocks)，两个线程都想使用某个资源，但是又都在等待对方释放资源后才能使用，结果最终都无法继续执行
+* 一些因为多线程导致的很隐晦的 BUG，难以复现和解决
+
+虽然 Rust 已经通过各种机制减少了上述情况的发生，但是依然无法完全避免上述情况，因此我们在编程时需要格外的小心，同时本书也会列出多线程编程时常见的陷阱，让你提前规避可能的风险。
+
+#### 创建线程
+使用 thread::spawn 可以创建线程
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    thread::spawn(|| {
+        for i in 1..10 {
+            println!("hi number {} from the spawned thread!", i);
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    for i in 1..5 {
+        println!("hi number {} from the main thread!", i);
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+```
+有几点值得注意：
+
+* 线程内部的代码使用闭包来执行
+* main 线程一旦结束，程序就立刻结束，因此需要保持它的存活，直到其它子线程完成自己的任务
+* thread::sleep 会让当前线程休眠指定的时间，随后其它线程会被调度运行（上一节并发与并行中有简单介绍过），因此就算你的电脑只有一个 CPU 核心，该程序也会表现的如同多 CPU 核心一般，这就是并发！
+
+如果多运行几次这段代码，你会发现好像每次输出会不太一样，因为：虽说**线程往往是轮流执行的，但是==这一点无法被保证==**！线程调度的方式往往取决于你使用的操作系统。总之，**千万不要依赖线程的执行顺序**。
+
+#### 等待子线程结束
+在上面的代码，我们并不能完整的执行完子线程，因为main线程会提前结束，导致线程任务未完成就结束。因此为了完成子线程任务，我们需要一个方法，让主线程安全、可靠地等所有子线程完成任务后，再 kill self
+```rust
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let handle = thread::spawn(|| {
+        for i in 1..5 {
+            println!("hi number {} from the spawned thread!", i);
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    handle.join().unwrap();
+
+    for i in 1..5 {
+        println!("hi number {} from the main thread!", i);
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+```
+>在上面代码中，由于 main 线程会被阻塞，因此它直到子线程结束后才会输出自己的 1..5：
+通过调用handle.join()来阻碍主线程，等待子线程完成后再执行之后的main线程代码。
+
+#### 线程闭包中使用move
+闭包中能捕获环境中的变量，所以我们可以将某个线程中的数据的所有权传递给另一个线程中：
+```rust
+use std::thread;
+
+fn main() {
+    let v = vec![1, 2, 3];
+
+    let handle = thread::spawn(|| {
+        println!("Here's a vector: {:?}", v); //这里闭包传进的v是以引用的形式传进
+    });
+
+    handle.join().unwrap();
+}
+```
+==但这个代码是会报错的。问题在于 Rust **无法确定新的线程会活多久**（多个线程的结束顺序并不是固定的），所以**也无法确定新线程所引用的 v 是否在使用过程中一直合法**==
+>问题在于，v变量的生命周期没有和线程绑定，当线程提前结束或没结束时，v的引用是否能用是不确定的。所以我们用move，将v的所有权完全转交给子线程，由子线程决定v是否存活。
+```rust
+use std::thread;
+
+fn main() {
+    let v = vec![1, 2, 3];
+
+    let handle = thread::spawn(move || {
+        println!("Here's a vector: {:?}", v);
+    });
+
+    handle.join().unwrap();
+
+    // 下面代码会报错borrow of moved value: `v`,所有权被转走了，main就没有v这个变量了。
+    // println!("{:?}",v);
+}
+```
+
+#### 线程结束
+在main函数结束后，所有的子线程就会自动结束，那么对于其他函数的子线程呢？
+答案很简单：线程的代码执行完，线程就会自动结束。但是如果线程中的代码不会执行完呢？那么情况可以分为两种进行讨论：
+* 线程的任务是一个循环 IO 读取，任务流程类似：IO 阻塞，等待读取新的数据 -> 读到数据，处理完成 -> 继续阻塞等待 ··· -> 收到 socket 关闭的信号 -> 结束线程，在此过程中，绝大部分时间线程都处于阻塞的状态，因此虽然看上去是循环，CPU 占用其实很小，也是网络服务中最最常见的模型
+* 线程的任务是一个循环，里面没有任何阻塞，包括休眠这种操作也没有，此时 CPU 很不幸的会被跑满，而且你如果没有设置终止条件，该线程将持续跑满一个 CPU 核心，并且不会被终止，直到 main 线程的结束
+
+>模拟第二种情况：
+>```rust
+>use std::thread;
+>use std::time::Duration;
+>fn main() {
+>    // 创建一个线程A
+>    let new_thread = thread::spawn(move || {
+>        // 再创建一个线程B
+>        thread::spawn(move || {
+>            loop {
+>                println!("I am a new thread.");
+>            }
+>        })
+>    });
+>
+>    // 等待新创建的线程执行完成
+>    new_thread.join().unwrap();
+>    println!("Child thread is finish!");
+>
+>    // 睡眠一段时间，看子线程创建的子线程是否还在运行
+>    thread::sleep(Duration::from_millis(100));
+>}
+>```
+>我们发现，main等待A线程结束后继续执行，A线程在创建了B线程后就结束了，但B线程因为loop无限执行，所以在main sleep语句执行完成前会一直打印，占用核心。
+
+#### 线程屏障
+运用线程屏障（barrier），我们能让多个线程都执行到某点后再继续一起往后执行语句。
+```rust
+use std::sync::{Arc, Barrier};
+use std::thread;
+
+fn main() {
+    let mut handles = Vec::with_capacity(6);
+    let barrier = Arc::new(Barrier::new(6));
+
+    for _ in 0..6 {
+        let b = barrier.clone();
+        handles.push(thread::spawn(move|| {
+            println!("before wait");
+            b.wait();
+            println!("after wait");
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+我们在线程打印出 before wait 后增加了一个屏障，目的就是等所有的线程都打印出before wait后，各个线程再继续执行
+
+#### 利用条件控制线程的挂起和执行
+条件变量(Condition Variables)经常和 Mutex 一起使用，可以让线程挂起，直到某个条件发生后再继续执行：
+```rust
+use std::thread;
+use std::sync::{Arc, Mutex, Condvar};
+
+fn main() {
+    let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let pair2 = pair.clone();
+
+    thread::spawn(move|| {
+        let (lock, cvar) = &*pair2;
+        let mut started = lock.lock().unwrap();
+        println!("changing started");
+        *started = true;
+        cvar.notify_one();
+    });
+
+    let (lock, cvar) = &*pair;
+    let mut started = lock.lock().unwrap();
+    while !*started {
+        started = cvar.wait(started).unwrap();
+    }
+
+    println!("started changed");
+}
+```
+上述代码流程如下：
+
+1. main 线程首先进入 while 循环，调用 wait 方法挂起等待子线程的通知，并释放了锁 started
+2. 子线程获取到锁，并将其修改为 true，然后调用条件变量的 notify_one 方法来通知主线程继续执行
+
+## 线程同步
+在多线程间有多种方式可以共享、传递数据，最常用的方式就是通过消息传递或者将锁和Arc联合使用，而对于前者，在编程界还有一个大名鼎鼎的Actor线程模型为其背书，典型的有 Erlang 语言，还有 Go 语言中很经典的一句话：
+>Do not communicate by sharing memory; instead, share memory by communicating
+### 消息传递
+Rust 是在标准库里提供了消息通道(channel)，你可以将其想象成一场直播，多个主播联合起来在搞一场直播，最终内容通过通道传输给屏幕前的我们，其中主播被称之为发送者，观众被称之为接收者，显而易见的是：一个通道应该支持多个发送者和接收者。
+
+#### 多发送者，单接收者
+标准库提供了通道std::sync::mpsc，其中mpsc是multiple producer, single consumer的缩写，代表了该通道支持多个发送者，但是只支持唯一的接收者。
+
+单发送者单接收者例子：
+```rust
+use std::sync::mpsc;
+use std::thread;
+
+fn main() {
+    // 创建一个消息通道, 返回一个元组：(发送者，接收者)
+    let (tx, rx) = mpsc::channel();
+
+    // 创建线程，并发送消息
+    thread::spawn(move || {
+        // 发送一个数字1, send方法返回Result<T,E>，通过unwrap进行快速错误处理
+        tx.send(1).unwrap();
+
+        // 下面代码将报错，因为编译器自动推导出通道传递的值是i32类型，那么Option<i32>类型将产生不匹配错误
+        // tx.send(Some(1)).unwrap()
+    });
+
+    // 在主线程中接收子线程发送的消息并输出
+    println!("receive {}", rx.recv().unwrap());
+}
+```
+上述代码逻辑简单，但注意几点：
+* tx,rx对应发送者和接收者，它们的类型由编译器自动推导: tx.send(1)发送了整数，因此它们分别是mpsc::Sender\<i32>和mpsc::Receiver\<i32>类型，需要注意，由于内部是泛型实现，一旦类型被推导确定，该通道就只能传递对应类型的值, 例如此例中非i32类型的值将导致编译错误
+* 接收消息的操作rx.recv()会阻塞当前线程，直到读取到值，或者通道被关闭
+* 需要使用move将tx的所有权转移到子线程的闭包中
+
+**try_recv方法，不阻塞进程**
+该方法并不会阻塞线程，当通道中没有消息时，它会立刻返回一个错误：
+```rust
+use std::sync::mpsc;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        tx.send(1).unwrap();
+    });
+
+    println!("receive {:?}", rx.try_recv());
+}
+```
+线程的创建需要时间，因此println!和try_recv方法会先执行，而此时子线程的消息还未被发出。try_recv会尝试立即读取一次消息，因为消息没有发出，此次读取最终会报错，且主线程运行结束
+打印出的结果如下：
+```
+receive Err(Empty)
+```
+
+##### 传输具有所有权的数据
+采用通道传输数据依旧符合所有权转移机制：
+* 若值的类型实现了Copy特征，则直接复制一份该值，然后传输过去，例如之前的i32类型
+* 若值没有实现Copy，则它的所有权会被转移给接收端，在发送端继续使用该值将报错
+
+##### 使用for进行循环接收
+样例：
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let vals = vec![
+            String::from("hi"),
+            String::from("from"),
+            String::from("the"),
+            String::from("thread"),
+        ];
+
+        for val in vals {
+            tx.send(val).unwrap();
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+
+    for received in rx {
+        println!("Got: {}", received);
+    }
+}
+```
+在上面代码中，主线程和子线程是并发运行的，子线程在不停的发送消息 -> 休眠 1 秒，与此同时，主线程使用for循环阻塞的从rx迭代器中接收消息，当子线程运行完成时，发送者tx会随之被drop，此时for循环将被终止，最终main线程成功结束。
+
+**多个发送者（多个线程）**
+```rust
+use std::sync::mpsc;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+    let tx1 = tx.clone();
+    thread::spawn(move || {
+        tx.send(String::from("hi from raw tx")).unwrap();
+    });
+
+    thread::spawn(move || {
+        tx1.send(String::from("hi from cloned tx")).unwrap();
+    });
+
+    for received in rx {
+        println!("Got: {}", received);
+    }
+}
+```
+对得到的发送者变量进行克隆，从而让不同线程拿走不同的发送者的所有权，得到一个新的发送者，并分配给不同线程从而实现多个线程共用同一个通道，发送给rx。
+但要注意这段代码的几个问题点：
+* 需要所有的发送者都被drop掉后，接收者rx才会收到错误，进而跳出for循环，最终结束主线程
+* 这里虽然用了clone但是并不会影响性能，因为它并不在热点代码路径中，仅仅会被执行一次
+* 由于两个子线程谁先创建完成是未知的，因此哪条消息先发送也是未知的，最终主线程的输出顺序也不确定
+
+##### 消息顺序
+上述第三点的消息顺序仅仅是因为线程创建引起的，并不代表通道中的消息是无序的，对于通道而言，消息的发送顺序和接收顺序是一致的，满足FIFO原则(先进先出)。
+
+##### 同步和异步通道
+Rust 标准库的mpsc通道其实分为两种类型：同步和异步。
+
+**异步通道**
+之前我们使用的都是异步通道：无论接收者是否正在接收消息，消息发送者在发送消息时都不会阻塞:
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+fn main() {
+    let (tx, rx)= mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        println!("发送之前");
+        tx.send(1).unwrap();
+        println!("发送之后");
+    });
+
+    println!("睡眠之前");
+    thread::sleep(Duration::from_secs(3));
+    println!("睡眠之后");
+
+    println!("receive {}", rx.recv().unwrap());
+    handle.join().unwrap();
+}
+```
+```rust
+睡眠之前
+发送之前
+发送之后
+//···睡眠3秒
+睡眠之后
+receive 1
+```
+我们发现，在睡眠延迟了rx的接受进程语句，但是消息依旧成功发出去并交给了rx。换句话说发出消息和接收消息是能够**不同步**分开进行的，也就是**异步**
+
+**同步通道**
+与异步通道相反，同步通道发送消息是阻塞的，只有在消息被接收后才解除阻塞，例如：
+```rust
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+fn main() {
+    let (tx, rx)= mpsc::sync_channel(0);
+
+    let handle = thread::spawn(move || {
+        println!("发送之前");
+        tx.send(1).unwrap();
+        println!("发送之后");
+    });
+
+    println!("睡眠之前");
+    thread::sleep(Duration::from_secs(3));
+    println!("睡眠之后");
+
+    println!("receive {}", rx.recv().unwrap());
+    handle.join().unwrap();
+}
+```
+输出：
+```rust
+睡眠之前
+发送之前
+//···睡眠3秒
+睡眠之后
+receive 1
+发送之后
+```
+对比异步通道，子进程在发送消息必须在rx需要收取信息后才发送这条信息语句，然后继续接下来的子线程。也就是接收和发送消息必须是同一时间进行的，是**同步**的。
+
+**消息缓存**
+在创建同步通道时，我们传递了一个参数0:“mpsc::sync_channel(0);”，这是什么意思呢？
+这说明我们能够缓存的信息条数为0；
+该参数可以用来指定同步通道的消息缓存条数，当你设定为N时，发送者就可以**无阻塞**的往通道中发送N条消息，当消息缓冲队列满了后，新的消息发送将被阻塞(如果没有接收者消费缓冲队列中的消息，那么第N+1条消息就将触发发送阻塞)。
+
+##### 关闭通道
+当**所有发送者**被drop或者**所有接收者**被drop后，通道会自动关闭
+
+##### 传输多种类型数据
+我们可以用多种通道来分别传多种的类型数据，但我们也能考虑用一个枚举来在一个通道中传多种类型
+>但是有一点需要注意，Rust 会按照枚举中占用内存最大的那个成员进行内存对齐，这意味着就算你传输的是枚举中占用内存最小的成员，它占用的内存依然和最大的成员相同, 因此会造成内存上的浪费。
