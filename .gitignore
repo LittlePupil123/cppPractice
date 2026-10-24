@@ -31,3 +31,4 @@ cmake-build-*/
 # Rust 编译产物
 target/
 **/target/
+rustPractice/Thread/src/main
