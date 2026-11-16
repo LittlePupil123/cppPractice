@@ -1,14 +1,18 @@
-#include <stdio.h>
-int main(void)
-{
-	int num1, denom1, num2, denom2, result_num, result_denom;
+#include<stdio.h>
 
-	printf("Enter two fractions separated by a plus sign:");
-	scanf("%d/%d+%d/%d",&num1,&denom1,&num2,&denom2);
-
-	result_num = num1*denom2 + num2*denom1;
-	result_denom = denom1*denom2;
-	printf("The sum is %d/%d\n", result_num, result_denom);
-
-	return 0;
+int main(){
+    double rate=5/100.0;
+    double amount;
+    printf("Enter an amount:");
+    scanf("%lf",&amount);
+    
+    amount+=amount*rate;
+    printf("with tax added:$%lf",amount);
+    
+    return 0;
 }
+// Enter a dollar amount: 93
+// $20 bills: 4
+// $10 bills: 1
+// $5 bills: 0
+// $1 bills: 3
