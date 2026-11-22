@@ -306,6 +306,12 @@ user/src/bin 里面有多个文件，其中三个是：
 
 ### 在内核程序中找到并加载应用程序
 [详情可见ch2的os/batch.rs中关于App manager部分]
+
+>里面涉及到UPSafeCell：
+>UPSafeCell 实现在 sync 模块中，调用 exclusive_access 方法能获取其内部对象的可变引用， 如果程序运行中同时存在多个这样的引用，会触发 already borrowed: BorrowMutError。说白了就是一个内部可变智能指针RefCell，并且能跨程序存在，因为实现Sync特征
+
+UPSafeCell 既提供了内部可变性，又在单核情境下防止了内部对象被重复借用，我们将在后文中多次见到它。
+
 清空内存前，我们插入了一条奇怪的汇编指令 **fence.i ，它是用来清理 i-cache 的**。 
 我们知道， **缓存又分成 数据缓存 (d-cache) 和 指令缓存 (i-cache) 两部分**，分别在 CPU 访存和取指的时候使用。 通常情况下， CPU 会认为程序的代码段不会发生变化，因此 i-cache 是一种只读缓存。 
 但在这里，我们会修改会被 CPU 取指的内存区域，使得 i-cache 中含有与内存不一致的内容， 必须使用 fence.i 指令手动清空 i-cache ，让里面所有的内容全部失效， 才能够保证程序执行正确性。
@@ -427,6 +433,212 @@ CTSS（Compatible Time-Sharing System， 兼容时间共享系统）操作系统
 * 任务运行状态：未初始化、准备执行、正在执行、已退出
 * 任务控制块：维护任务状态和任务上下文
 * 任务相关系统调用：程序主动暂停 sys_yield 和主动退出 sys_exit
+
+#### yield系统调用
+sys_yield是程序主动暂停的系统调用接口。比如在请求外设输入输出时，就会调用该接口暂停自身，使得内核能够执行外设相关程序，一段时间后外设程序返回，然后原程序继续执行。保证程序等待时暂停能够避免资源浪费。
+[具体可看user/src/syscall.rs中的sys_yield函数实现封装和传唤内核]
+
+#### 任务控制块、任务运行状态
+任务运行状态和任务控制块的声明可看枚举[os/src/task/task.rs]
+任务控制块由该任务的运行状态和该任务的上下文两部分组成。
+==任务控制块非常重要。在内核中，它就是应用的管理单位。后面的章节我们还会不断向里面添加更多内容。==
+
+#### 任务管理器
+内核需要一个全局的任务管理器来管理这些任务控制块：
+[具体可看ch3的os/src/task/mod.rs]
+
+
+#### 实现sys_yield和sys_exit
+sys_yield 的实现用到了 task 子模块提供的 suspend_current_and_run_next 接口，这个接口如字面含义，就是暂停当前的应用并切换到下个应用。
+
+sys_exit 基于 task 子模块提供的 exit_current_and_run_next 接口，它的含义是退出当前的应用并切换到下个应用：
+**两个接口都在做一件事：将任务管理器中的当前任务修改状态，然后run_next_task**
+[ch3的os/src/syscall/process.rs]
+
+run next task()方法的实现：
+```rust
+// os/src/task/mod.rs
+ 2
+ 3 impl TaskManager {
+ 4    fn run_next_task(&self) {
+ 5        if let Some(next) = self.find_next_task() {
+ 6            let mut inner = self.inner.exclusive_access();
+ 7            let current = inner.current_task;
+ 8            inner.tasks[next].task_status = TaskStatus::Running;
+ 9            inner.current_task = next;
+10            let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
+11            let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+12            drop(inner);
+13            // before this, we should drop local variables that must be dropped manually
+14            unsafe {
+15                __switch(current_task_cx_ptr, next_task_cx_ptr);
+16            }
+17            // go back to user mode
+18        } else {
+19            panic!("All applications completed!");
+20        }
+21    }
+22
+23    fn find_next_task(&self) -> Option<usize> {
+24        let inner = self.inner.exclusive_access();
+25        let current = inner.current_task;
+26        (current + 1..current + self.num_app + 1)
+27            .map(|id| id % self.num_app)
+28            .find(|id| inner.tasks[*id].task_status == TaskStatus::Ready)
+29    }
+30 }
+```
+
+run_next_task 会调用 find_next_task 方法尝试寻找一个运行状态为 Ready 的应用并获得其 ID 。 **如果找不到， 说明所有应用都执行完了， find_next_task 将返回 None ，内核 panic 退出。 如果能够找到下一个可运行应用，我们就调用 __switch 切换任务。**
+
+切换任务之前，我们要**手动 drop 掉我们获取到的 TaskManagerInner 可变引用。 因为函数还没有返回， inner 不会自动销毁。我们只有令 TASK_MANAGER 的 inner 字段回到未被借用的状态，下次任务切换时才能再借用。**
+
+#### 第一次进入用户态
+那么对于程序进入第一个应用程序，可以类比我们在ch2中对第一个程序的处理，将内核栈压入一个空白上下文，然后进行初始化，调用__restore()
+在这个思路上我们进行扩展，初始化任务块就能得到如何第一次进入用户态：
+```rust
+// os/src/task/mod.rs
+
+for (i, t) in tasks.iter_mut().enumerate().take(num_app) {
+    t.task_cx = TaskContext::goto_restore(init_app_cx(i));
+    t.task_status = TaskStatus::Ready;
+}
+```
+init_app_cx 在 loader 子模块中定义，它向内核栈压入了一个 Trap 上下文，并返回压入 Trap 上下文后 sp 的值。 这个 Trap 上下文的构造方式与第二章相同。
+
+goto_restore 保存传入的 sp，并将 ra 设置为 __restore 的入口地址，构造任务上下文后返回。这样，任务管理器中各个应用的任务上下文就得到了初始化。
+```rust
+// os/src/task/context.rs
+
+impl TaskContext {
+    pub fn goto_restore(kstack_ptr: usize) -> Self {
+        extern "C" { fn __restore(); }
+        Self {
+            ra: __restore as usize,
+            sp: kstack_ptr,
+            s: [0; 12],
+        }
+    }
+}
+```
+在 rust_main 中我们调用 task::run_first_task 来执行第一个应用：
+```rust
+// os/src/task/mod.rs
+ 2
+ 3fn run_first_task(&self) -> ! {
+ 4    let mut inner = self.inner.exclusive_access();
+ 5    let task0 = &mut inner.tasks[0];
+ 6    task0.task_status = TaskStatus::Running;
+ 7    let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
+ 8    drop(inner);
+ 9    let mut _unused = TaskContext::zero_init();
+10    // before this, we should drop local variables that must be dropped manually
+11    unsafe {
+12        __switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
+13    }
+14    panic!("unreachable in run_first_task!");
+15}
+```
+在 __switch 中恢复 sp 后， sp 将指向 init_app_cx 构造的 Trap 上下文，后面就回到第二章的情况了。 此外，**restore 的实现**需要做出变化：它 **不再需要 在开头 mv sp, a0 了。因为在 __switch 之后，sp 就已经正确指向了我们需要的 Trap 上下文地址。**
+==必须指出的是，__switch后能够跳转到__restore的原因是我们初始化的ra指向的是__restore，并且我们switch最后会ret，而ret的规范就在于，ret后会跳转到ra指向的指令处执行。==
+
+### 分时多任务系统
+现代的任务调度算法基本都是抢占式的，它要求每个应用只能连续执行一段时间，然后内核就会将它强制性切换出去。 一般将 ==**时间片 (Time Slice)**== 作为应用连续执行时长的度量单位，每个时间片可能在毫秒量级。 简单起见，我们使用 **时间片轮转算法 (RR, Round-Robin)** 来对应用进行调度。
+
+#### 时钟中断和计时器
+实现调度算法需要计时。RISC-V 要求处理器维护时钟计数器 mtime，还有另外一个 CSR mtimecmp 。 一旦计数器 mtime 的值超过了 mtimecmp，就会触发一次时钟中断。
+
+运行在 M 特权级的 SEE 已经预留了相应的接口，基于此编写的 get_time 函数可以取得当前 mtime 计数器的值；
+[ 具体见ch3的os/src/timer.rs]
+timer模块同时还有其他关于计时方面函数的声明和实现
+
+在 10 ms 后设置时钟中断的代码如下：
+```rust
+ 1// os/src/sbi.rs
+ 2
+ 3 const SBI_SET_TIMER: usize = 0;
+ 4
+ 5 pub fn set_timer(timer: usize) {//该函数用于设置mtimecmp的值
+ 6    sbi_call(SBI_SET_TIMER, timer, 0, 0);
+ 7 }
+ 8
+ 9 // os/src/timer.rs
+10
+11 use crate::config::CLOCK_FREQ;
+12 const TICKS_PER_SEC: usize = 100;
+13
+
+/// 对 set_timer 进行了封装， 
+/// 它首先读取当前 mtime 的值，
+/// 然后计算出 10ms 之内计数器的增量，
+/// 再将 mtimecmp 设置为二者的和。
+///  这样，10ms 之后一个 S 特权级时钟中断就会被触发。
+14 pub fn set_next_trigger() {
+15    set_timer(get_time() + CLOCK_FREQ / TICKS_PER_SEC);
+16 }
+```
+>增量的计算方式， CLOCK_FREQ 是一个预先获取到的各平台不同的时钟频率，单位为赫兹，也就是一秒钟之内计数器的增量。 它可以在 config 子模块中找到。10ms 的话只需除以常数 TICKS_PER_SEC 也就是 100 即可。
+
+新增一个系统调用，使应用能获取当前的时间：
+```rust
+/// 功能：获取当前的时间，保存在 TimeVal 结构体 ts 中，
+/// _tz 在我们的实现中忽略
+/// 返回值：返回是否执行成功，成功则返回 0
+/// syscall ID：169。具体模块实现详情再user/syscall.rs
+fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize;
+```
+
+#### RISC-V的嵌套中断问题
+默认情况下，当 Trap 进入某个特权级之后，在 Trap 处理的过程中同特权级的中断都会被屏蔽。
+
+* 当 Trap 发生时，sstatus.sie 会被保存在 sstatus.spie 字段中，同时 sstatus.sie 置零， 这也就在 Trap 处理的过程中屏蔽了所有 S 特权级的中断；
+* 当 Trap 处理完毕 sret 的时候， sstatus.sie 会恢复到 sstatus.spie 内的值。
+
+如果不去手动设置 sstatus CSR ，在只考虑 S 特权级中断的情况下，是不会出现 嵌套中断 (Nested Interrupt) 的。
+>嵌套中断与嵌套 Trap
+>
+>嵌套中断可以分为两部分：在处理一个中断的过程中又被同特权级/高特权级中断所打断。默认情况下硬件会避免前一部分， 也可以通过手动设置来允许前一部分的存在；而从上面介绍的规则可以知道，后一部分则是无论如何设置都不可避免的。
+>
+>嵌套 Trap 则是指处理一个 Trap 过程中又再次发生 Trap ，嵌套中断算是嵌套 Trap 的一种。
+
+==为什么在这里需要讨论嵌套中断？因为在10ms的时间内，可能出现我们还未来得及恢复完下一个任务的上下文后就又切换到下一个任务。但是，有可能出现我们sscratch等寄存器状态并没有恢复完全就跳入下一个，导致栈使用被破坏==
+
+#### 抢占式调度
+在时钟中断和计时器的情况下实现抢占式调用
+```rust
+// os/src/trap/mod.rs
+
+match scause.cause() {
+    Trap::Interrupt(Interrupt::SupervisorTimer) => {
+        set_next_trigger(); //设置下一次的mtimecmp
+        suspend_current_and_run_next();
+    }
+}
+```
+我们只需在 trap_handler 函数下新增一个分支，触发了 S 特权级时钟中断时，重新设置计时器， 调用 suspend_current_and_run_next 函数暂停当前应用并切换到下一个。
+
+为了避免 S 特权级时钟中断被屏蔽，我们需要在执行第一个应用前调用 enable_timer_interrupt() 设置 sie.stie， 使得 S 特权级时钟中断不会被屏蔽；再设置第一个 10ms 的计时器。
+```rust
+ 1 // os/src/main.rs
+ 2
+ 3 #[no_mangle]
+ 4 pub fn rust_main() -> ! {
+ 5    // ...
+ 6    trap::enable_timer_interrupt();
+ 7    timer::set_next_trigger();
+ 8    // ...
+ 9 }
+10
+11 // os/src/trap/mod.rs
+12
+13 use riscv::register::sie;
+14
+15 pub fn enable_timer_interrupt() {
+16    unsafe { sie::set_stimer(); }
+17 } 
+```
+
+
 
 
 
