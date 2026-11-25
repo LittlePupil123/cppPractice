@@ -541,6 +541,7 @@ impl TaskContext {
 ```
 在 __switch 中恢复 sp 后， sp 将指向 init_app_cx 构造的 Trap 上下文，后面就回到第二章的情况了。 此外，**restore 的实现**需要做出变化：它 **不再需要 在开头 mv sp, a0 了。因为在 __switch 之后，sp 就已经正确指向了我们需要的 Trap 上下文地址。**
 ==必须指出的是，__switch后能够跳转到__restore的原因是我们初始化的ra指向的是__restore，并且我们switch最后会ret，而ret的规范就在于，ret后会跳转到ra指向的指令处执行。==
+**而我们在ra一开始设为__restore是为了这种情况：如果程序执行过，那么在该任务的上下文结构体中的ra字段会在后续使用时自动存储为下一条指令，到时候__switch返回回来则会自动跳转到ra指向的该任务的下一条指令，而如果程序从未执行过，那么__switch就会根据存的初始化ra跳转到__restore从而进入U态并开始执行当前任务**
 
 ### 分时多任务系统
 现代的任务调度算法基本都是抢占式的，它要求每个应用只能连续执行一段时间，然后内核就会将它强制性切换出去。 一般将 ==**时间片 (Time Slice)**== 作为应用连续执行时长的度量单位，每个时间片可能在毫秒量级。 简单起见，我们使用 **时间片轮转算法 (RR, Round-Robin)** 来对应用进行调度。
@@ -638,25 +639,422 @@ match scause.cause() {
 17 } 
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 =====================================
 ---
 ## 第四章实现Address Space OS
 解决多个应用所在内存隔离的问题，从而确保应用之间不会相互破坏各自的内存空间，并进一步发展出地址空间、虚拟内存等操作系统核心概念。
+
+### 地址空间
+将物理地址进行抽象成统一单位的地址空间。并依次编号，给每个应用程序提供一个接口能够获取分配给自己的虚拟内存空间。而将这种虚拟空间通过os和硬件的操作来分配到物理地址上并进行管理调度，从而既做到程序间的隔离，以及保证物理内存的充分合理使用，减少程序间的地址空隙（内存碎片）的产生。
+
+
+### 实现SV39多级页表机制
+#### 虚拟地址和物理地址
+##### 内存控制相关的CSR寄存器
+默认情况下 MMU 未被使能，此时无论 CPU 处于哪个特权级，访存的地址都将直接被视作物理地址。 **可以通过修改 S 特权级的 satp CSR 来启用分页模式**，此后 S 和 U 特权级的访存地址会被视为虚拟地址，**经过 MMU 的地址转换获得对应物理地址**，再通过它来访问物理内存。
+
+>satp的Mode字段如果设为0，则所有访存均为物理地址，设为8，则访存被视为39位的虚拟地址，经由MMU转化为56位的物理地址
+
+##### 地址格式与组成
+
+![alt text](./image/AddressForm.png)
+
+地址转换是以页为单位进行的，转换前后地址页内偏移部分不变。MMU 只是从虚拟地址中取出 27 位虚拟页号， 在页表中查到其对应的物理页号，如果找到，就将得到的 44 位的物理页号与 12 位页内偏移拼接到一起，形成 56 位物理地址。
+
+>RV64 架构中虚拟地址为何只有 39 位？
+>
+>虚拟地址长度确实应该和位宽一致为 64 位，但是在启用 SV39 分页模式下，只有低 39 位是真正有意义的。 SV39 分页模式规定 64 位虚拟地址的 
+>[63:39] 这 25 位必须和第 38 位相同，否则 MMU 会直接认定它是一个 不合法的虚拟地址。。
+>
+>也就是说，所有2^64 个虚拟地址中，只有最低的 256GIB（当第 38 位为 0 时） 以及最高的 256GIB（当第 38 位为 1 时）是可能通过 MMU 检查的。
+
+##### 地址相关数据结构在rust程序中的抽象
+[详情见ch4的os/src/mm/address.rs]
+类型声明：
+```rust
+// os/src/mm/address.rs
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct PhysAddr(pub usize);
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct VirtAddr(pub usize);
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct PhysPageNum(pub usize);
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct VirtPageNum(pub usize);
+```
+将各个地址类型进行元组结构体包装，从而在编写程序时让编写者自行清楚每个不同量的含义，以及通过显式提供新类型降低参数传错等问题，将问题提前到编译期。
+且包装后的新类型能够实现外部特征，比如各个地址相关类型间的转换：address.rs中对From特征的定义
+
+我们对虚拟地址和物理地址均实现了floor方法和ceil方法：
+floor是给定一个地址，得到这个地址所在的当前页的页号（向下取整），而ceil是找到下一页的页号（向上取整）
+
+#### 页表项的数据结构抽象与类型定义
+![alt text](./image/pageFormat.png)
+
+上图为 SV39 分页模式下的页表项，其中[53:10]这44位是物理页号，**虚拟页号通常不显式存在格子里——它由"这个格子在表中的位置"隐含表达（索引即 VPN 的某一段）**
+最低的8位[7:0]则是**标志位**，它们的含义如下：
+* 仅当 V(Valid) 位为 1 时，页表项才是合法的；
+* R/W/X 分别控制索引到这个页表项的对应虚拟页面是否允许读/写/取指；
+* U 控制索引到这个页表项的对应虚拟页面是否在 CPU 处于 U 特权级的情况下是否被允许访问；
+* G 我们不理会；
+* A(Accessed) 记录自从页表项上的这一位被清零之后，页表项的对应虚拟页面是否被访问过；
+* D(Dirty) 则记录自从页表项上的这一位被清零之后，页表项的对应虚拟页表是否被修改过。
+
+先实现标志位的数据结构抽象：
+```rust
+// os/src/main.rs
+
+#[macro_use]
+extern crate bitflags;
+
+// os/src/mm/page_table.rs
+
+use bitflags::*;
+
+bitflags! {
+    pub struct PTEFlags: u8 {
+        const V = 1 << 0;
+        const R = 1 << 1;
+        const W = 1 << 2;
+        const X = 1 << 3;
+        const U = 1 << 4;
+        const G = 1 << 5;
+        const A = 1 << 6;
+        const D = 1 << 7;
+    }
+}
+```
+bitflags 是一个 Rust 中常用来实现比特标志位的 crate 。**它提供了 一个 bitflags! 宏**，如上面的代码段所展示的那样，**可以将一个 u8 封装成一个标志位的集合类型（变为二进制，分给各个标志位），支持一些常见的集合 运算**。
+
+然后实现页表项PageTableEntry（PTE）声明和相关功能：
+[详情见ch4的os/src/mm/page_table.rs]
+
+#### 物理页帧管理
+##### 可用物理页的分配和回收
+###### 确定可用物理内存区间
+
+首先，我们需要知道物理内存的哪一部分是可用的。在 os/src/linker.ld 中，我们用**符号 ekernel 指明了 内核数据的终止物理地址**，在它之后的物理内存都是可用的。
+而在 config 子模块中：
+```rust
+// os/src/config.rs
+
+pub const MEMORY_END: usize = 0x88000000;
+```
+我们硬编码整块物理内存的终止物理地址为 0x88000000 。 而物理内存的起始物理地址为 0x80000000 ， 意味着我们将可用内存大小设置为 128MiB，当然也可以设置的更大一点。
+
+用一个左闭右开的物理页号区间来表示可用的物理内存，则：
+在一开始，ekernel向上取整得到的下一物理页号是可用内存的左端点，而MEMORY_END的floor（当前所处物理页号）则是右端点。从而表示可用的页号区间。
+==这个区间会传给物理页帧管理器进行管理==
+
+###### 实现物理页帧管理器
+相关管理器特征，结构体，全局实例，方法声明和实现
+[详情见ch4的os/src/mm/frame_allocator.rs]
+
+###### 分配/回收物理页帧的相关接口
+公开给其他子模块调用的分配/回收物理页帧的接口，以及相关包装容器：
+```rust
+// os/src/mm/frame_allocator.rs
+
+pub fn frame_alloc() -> Option<FrameTracker> {
+    FRAME_ALLOCATOR
+        .exclusive_access()
+        .alloc()
+        .map(FrameTracker::new)
+        //map 是 Option<T> 的标准库方法（Option::map），
+        //它的作用是：如果 Option 里有值，
+        //就把这个值交给闭包/函数处理，
+        //再把结果重新包成 Some；
+        //如果是 None，就什么都不做，直接返回 None。
+}
+
+fn frame_dealloc(ppn: PhysPageNum) {
+    FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
+}
+
+pub struct FrameTracker {
+    pub ppn: PhysPageNum,
+}
+
+impl FrameTracker {
+    pub fn new(ppn: PhysPageNum) -> Self {
+        // page cleaning
+        //get_bytes_array()通过页号查找到对应物理地址，
+        //然后将该页转成u8数组切片
+        //从而能够通过操作该数组切片
+        //在rust中操作这块内存（在这里是清零这块内存）
+        let bytes_array = ppn.get_bytes_array();
+        for i in bytes_array {
+            *i = 0;
+        }
+        Self { ppn }
+    }
+}
+```
+frame_alloc 的返回值类型并**不是 FrameAllocator 要求的物理页号 PhysPageNum** ，而是将其 进一步包装为一个 FrameTracker
+我们将分配来的物理页帧的物理页号作为参数传给 FrameTracker 的 new 方法来创建一个 FrameTracker 实例。由于这个物理页帧之前可能被分配过并用做其他用途，我们在这里直接将这个物理页帧上的所有字节清零。这一过程并不 那么显然，我们后面再详细介绍。
+
+当一个 FrameTracker 生命周期结束被编译器回收的时候，我们需要将它控制的物理页帧回收掉 FRAME_ALLOCATOR 中：
+```rust
+impl Drop for FrameTracker {
+    fn drop(&mut self) {
+        frame_dealloc(self.ppn);
+    }
+}
+```
+通过Drop特征下的drop实现能够使得FrameTracker实例被销毁时自动回收该段物理页帧
+
+>最后做一个小结：从其他模块的视角看来，物理页帧分配的接口是调用 frame_alloc 函数得到一个 FrameTracker （如果物理内存还有剩余），它就代表了一个物理页帧，当它的生命周期结束之后它所控制的物理页帧将被自动回收。
+
+#### 多级页表的机制实现
+##### 页表基本数据结构与访问接口
+SV39 多级页表是以节点为单位进行管理的。**每个节点恰好存储在一个物理页帧中**，它的位置**可以用一个物理页号来表示。**
+
+```rust
+ 1 // os/src/mm/page_table.rs
+ 2
+ 3 pub struct PageTable {
+ 4    root_ppn: PhysPageNum,
+ 5    frames: Vec<FrameTracker>,
+ 6 }
+ 7
+ 8 impl PageTable {
+ 9    pub fn new() -> Self {
+10        let frame = frame_alloc().unwrap();
+11        PageTable {
+12            root_ppn: frame.ppn,
+13            frames: vec![frame],
+14        }
+15    }
+16 }
+```
+每个应用的地址空间都对应一个不同的多级页表，这也就意味这 **不同页表的起始地址（即页表根节点的地址）是不一样的。 因此 PageTable 要保存它根节点的物理页号 root_ppn 作为页表唯一的区分标志。** 此外， **向量 frames 以 FrameTracker 的形式保存了页表所有的节点（包括根节点）所在的物理页帧。** 
+>这与物理页帧管理模块 的测试程序是一个思路，即将这些 FrameTracker 的生命周期进一步绑定到 PageTable 下面。当 PageTable 生命周期结束后，向量 frames 里面的那些 FrameTracker 也会被回收，也就意味着存放多级页表节点的那些物理页帧 被回收了。
+
+当我们通过 new 方法新建一个 PageTable 的时候，它只需有一个根节点。为此我们需要分配一个物理页帧 FrameTracker 并挂在向量 frames 下，然后更新根节点的物理页号 root_ppn 。
+
+==多级页表并不是被创建出来之后就不再变化的==，为了 MMU 能够通过地址转换正确找到应用地址空间中的数据实际被内核放在内存中 位置，操作系统需要动态维护一个虚拟页号到页表项的映射，支持插入/删除键值对，其方法签名如下：
+```rust
+// os/src/mm/page_table.rs
+
+impl PageTable {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags);
+    pub fn unmap(&mut self, vpn: VirtPageNum);
+}
+```
+* 我们通过 map 方法来在多级页表中插入一个键值对，==注意这里我们将物理页号 ppn 和页表项标志位 flags 作为 不同的参数传入而不是整合为一个页表项==；
+* 相对的，我们通过 unmap 方法来删除一个键值对，在调用时仅需给出作为索引的虚拟页号即可。
+
+在这些操作的过程中，我们自然需要访问或修改多级页表节点的内容。每个节点都被保存在一个物理页帧中，在多级页表的架构中，我们通过物理页号获取到该节点所在的页帧，从而能够读取该页表项（节点）
+
+而对于我们一开始的目标而言，我们当前**只有虚拟页号**。
+这就需要我们提前扩充多级页表维护的映射，使得对于每一个对应于某一特定物理页帧的物理页号 ppn ，均存在一个虚拟页号 vpn 能够映射到它，而且要能够较为简单的针对一个 ppn 找到某一个能映射到它的 vpn 。
+
+>采用一种最 简单的 恒等映射 (Identical Mapping) ，也就是说对于物理内存上的每个物理页帧，我们都在多级页表中用一个与其 物理页号相等的虚拟页号映射到它。当我们想针对物理页号构造一个能映射到它的虚拟页号的时候，也只需使用一个和该物理页号 相等的虚拟页号即可。
+
+
+##### 内核中访问物理页帧的方法
+我们构造可变引用来直接访问一个物理页号 PhysPageNum 对应的物理页帧，不同的引用类型对应于物理页帧上的一种不同的 内存布局
+```rust
+// os/src/mm/address.rs
+
+impl PhysPageNum {
+    /// 获取该页帧作为页表
+    pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
+        let pa: PhysAddr = self.clone().into();
+        unsafe {
+            core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512)
+        }
+    }
+
+    /// 通过物理页号找到对应的物理页帧将该页帧转化为数组
+    /// 通过对数组操作来修改页帧中的每个字节
+    pub fn get_bytes_array(&self) -> &'static mut [u8] {
+        let pa: PhysAddr = self.clone().into();
+        unsafe {
+            core::slice::from_raw_parts_mut(pa.0 as *mut u8, 4096)
+        }
+    }
+
+    /// get_mut 是个泛型函数，
+    /// 可以获取一个恰好放在一个物理页帧开头的
+    /// 类型为 T 的数据的可变引用。
+    pub fn get_mut<T>(&self) -> &'static mut T {
+        let pa: PhysAddr = self.clone().into();
+        unsafe {
+            (pa.0 as *mut T).as_mut().unwrap()
+        }
+    }
+}
+```
+
+>我们在返回值类型上**附加了 静态生命周期泛型 'static**，这是为了绕过 Rust 编译器的借用检查，实质上可以将返回的类型也看成一个裸指针，因为 它也只是标识数据存放的位置以及类型。但与裸指针不同的是，无需通过 unsafe 的解引用访问它指向的数据，而是可以像一个 正常的可变引用一样直接访问。
+
+实现这个功能，即可通过物理页号来跳转并修改对应的物理页帧
+
+##### 建立和拆除虚实地址映射关系
+建立和拆除虚实地址映射关系的 map 和 unmap 方法的实现。它们都依赖于一个很重要的过程， 也即
+1. 在多级页表中找到一个虚拟地址对应的页表项。
+2. 找到之后，只要修改页表项的内容即可完成键值对的插入和删除。 
+3. 在寻找页表项的时候，可能出现页表的中间级节点还未被创建的情况，这个时候我们需要手动分配一个物理页帧来存放这个节点， 并将这个节点接入到当前的多级页表的某级中。
+
+[详情见ch4的os/src/mm/address.rs当中173:184]
+和[ch4的os/src/mm/page_table.rs当中86:163]
+
+>注意在更新页表项的时候，不仅要更新物理页号，还要将标志位 V 置 1， 不然硬件在查多级页表的时候，会认为这个页表项不合法，从而触发 Page Fault 而不能向下走。
+
+**于是map和unmap的实现就比较简单**
+```rust
+// os/src/mm/page_table.rs
+
+impl PageTable {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        //得到vpn对应的叶子页表项
+        let pte = self.find_pte_create(vpn).unwrap();
+        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);//为得到的叶子页表项填入ppn，使得vpn和ppn建立映射
+    }
+    pub fn unmap(&mut self, vpn: VirtPageNum) {
+        let pte = self.find_pte_create(vpn).unwrap();
+        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        *pte = PageTableEntry::empty();//清空vpn对应叶子页表项从而断开与ppn联系
+    }
+}
+```
+于是建立起从虚拟页号到物理页号间的映射
+为了方便后面的实现，我们还需要 PageTable 提供一种不经过 MMU 而是手动查页表的方法：
+[详情继续见ch4的os/src/mm/page_table.rs当中86:163]
+
+### 内核与应用的地址空间
+基于我们之前实现的页表机制，在内核中实现地址空间的抽象
+
+#### 实现地址空间的抽象
+
+##### 逻辑段：一段连续地址的虚拟内存
+我们以逻辑段 MapArea 为单位描述一段连续地址的虚拟内存。
+>逻辑段，就是指地址区间中的一段实际可用（即 MMU 通过查多级页表 可以正确完成地址转换）的地址**连续**的虚拟地址区间，该区间内包含的**所有虚拟页面都以一种相同的方式映射**到物理页帧，具有可读/可写/可执行等属性。
+在rust中我们抽象成如下数据结构体：
+```rust
+// os/src/mm/memory_set.rs
+
+pub struct MapArea {
+    vpn_range: VPNRange,
+    data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    map_type: MapType,
+    map_perm: MapPermission,
+}
+```
+* VPNRange 描述一段虚拟页号的连续区间，表示该逻辑段在地址区间中的位置和长度。
+它是一个迭代器，可以使用 Rust 的语法糖 for-loop 进行迭代
+* MapType 描述该逻辑段内的所有虚拟页面映射到物理页帧的同一种方式，
+它是一个枚举类型，在内核当前的实现中支持两种方式：
+```rust
+// os/src/mm/memory_set.rs
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum MapType {
+    Identical,
+    Framed,
+}
+```
+>其中 Identical 表示之前也有提到的恒等映射，用于在启用多级页表之后仍能够访问一个特定的物理地址指向的物理内存；而 Framed 则表示对于每个虚拟页面都需要映射到一个新分配的物理页帧。
+>
+* 当逻辑段采用**MapType::Framed 方式**映射到物理内存的时候，**data_frames 是**一个保存了该逻辑段内的每个虚拟页面 和它被映射到的物理页帧 FrameTracker 的**一个键值对容器** BTreeMap 中， 
+这些物理页帧被用来存放实际内存数据而不是 作为多级页表中的中间节点（也就是可调度的内存资源，而不是用于制作页表的内存）。和之前的 PageTable 一样，这也用到了 RAII 的思想，将这些物理页帧的生命周期绑定到它所在的逻辑段 MapArea 下，当逻辑段被回收之后这些之前分配的物理页帧也会自动地同时被回收。
+
+* MapPermission 表示控制该逻辑段的访问方式，它是页表项标志位 PTEFlags 的一个子集，仅保留 U/R/W/X 四个标志位
+因为其他的标志位仅与硬件的地址转换机制细节相关，这样的设计能避免引入错误的标志位。
+```rust
+// os/src/mm/memory_set.rs
+
+bitflags! {
+    pub struct MapPermission: u8 {
+        const R = 1 << 1;
+        const W = 1 << 2;
+        const X = 1 << 3;
+        const U = 1 << 4;
+    }
+}
+```
+
+##### 地址空间：一系列有联系的逻辑段
+这种**关联一般是指这些逻辑段属于一个运行的程序**（目前把一个运行的程序称为任务，后续会称为进程）。 用来表明正在运行的应用所在执行环境中的可访问内存空间，在这个内存空间中，包含了一系列的不一定连续的逻辑段。
+地址空间用来表明正在运行的应用**所在执行环境中的可访问内存空间**，在这个内存空间中，包含了一系列的不一定连续的逻辑段。 这样我们**就有任务的地址空间、内核的地址空间等说法了。**
+我们定义一个MemorySet来表示地址空间：
+```rust
+// os/src/mm/memory_set.rs
+
+pub struct MemorySet {
+    page_table: PageTable,//负责将地址空间内的每个虚拟地址映射到物理页帧
+    areas: Vec<MapArea>, //负责记录存储着数据的虚拟页号
+    //通过页表得到对应有数据的页帧
+}
+```
+包含了该地址空间的多级页表 page_table 和一个逻辑段 MapArea 的向量 areas
+两部分合起来得到所有的地址空间属性（一系列逻辑段+页表联系起来）
+
+然后我们**为地址空间实现相关方法和函数**：
+==[详情见 ch4的os/src/mm/memory_set.rs]==
+* new_bare 方法可以新建一个空的地址空间
+*  push 方法可以在当前地址空间插入一个新的逻辑段 map_area ，
+  如果它是以 Framed 方式映射到 物理内存，还可以可选地在那些被映射到的物理页帧上写入一些初始化数据 data ；
+* insert_framed_area 方法调用 push ，可以在当前地址空间插入一个 Framed 方式映射到 物理内存的逻辑段。
+  从后面的内核和 应用的地址空间布局可以看出这一要求得到了保证
+* new_kernel 可以生成内核的地址空间
+* from_elf 则可以应用的 ELF 格式可执行文件 解析出各数据段并对应生成应用的地址空间。
+
+实现 push 方法在地址空间中插入一个逻辑段 MapArea 的时候，需要同时维护地址空间的多级页表 page_table 记录的虚拟页号到页表项的映射关系
+也需要用到这个映射关系来找到向哪些物理页帧上拷贝初始数据。这用到了 **MapArea** 提供的几个方法：
+[具体见ch4的os/src/mm/memory_set.rs]
+* new 方法可以新建一个逻辑段结构体，注意==传入的起始/终止虚拟地址会分别被下取整/上取整为虚拟页号并传入 迭代器 vpn_range 中；==
+* map 和unmap 可以将当前逻辑段到物理内存的映射从传入的该逻辑段所属的地址空间的 多级页表中加入或删除。
+  它们的实现是遍历逻辑段中的所有虚拟页面，并以每个虚拟页面为单位依次在多级页表中进行 键值对的插入或删除，分别对应 MapArea 的 map_one 和 unmap_one 方法
+*  copy_data 方法将切片 data 中的数据拷贝到当前逻辑段实际被内核放置在的各物理页帧上，从而 在地址空间中通过该逻辑段就能访问这些数据。
+  调用它的时候需要满足：切片 data 中的数据大小不超过当前逻辑段的 总大小，且切片中的数据会被对齐到逻辑段的开头，然后逐页拷贝到实际的物理页帧。
+  其中的循环会遍历每一个需要拷贝数据的虚拟页面，在数据拷贝完成后会在第 48 行通过调用 step 方法，该 方法来自于 os/src/mm/address.rs 中为 VirtPageNum 实现的 StepOne Trait，感兴趣的读者可以阅读 代码确认其实现。
+
+* map_one方法和unmap_one方法具体实现同样见memory_set子模块
+
+#### 内核地址空间
+地址空间抽象的重要意义在于 隔离 (Isolation) 
+>由于每个应用地址空间在创建 的时候也顺带设置好了多级页表使得只有那些存放了它的数据的物理页帧能够通过该多级页表被映射到，这样它就只能访问自己的数据 而无法触及其他应用或是内核的数据。
+
+启用分页模式下，内核代码的访存地址也会被视为一个虚拟地址并需要经过 MMU 的地址转换，因此我们也需要为内核对应构造一个 地址空间，它除了仍然需要允许内核的各数据段能够被正常访问之后，还需要包含所有应用的内核栈以及一个 跳板 (Trampoline) 。我们会在本章的最后一节再深入介绍跳板的机制。
+
+但我们的内核代码在之前已经排布完善，我们可以考虑采用恒等类型
+四个逻辑段 .text/.rodata/.data/.bss 被恒等映射到物理内存，这使得我们在无需调整内核内存布局 os/src/linker.ld 的情况下就仍能和启用页表机制之前那样访问内核的各数据段。注意我们借用页表机制对这些逻辑段的访问方式做出了限制，这都是为了 在硬件的帮助下能够尽可能发现内核中的 bug ，在这里：
+* 四个逻辑段的 U 标志位均未被设置，使得 CPU 只能在处于 S 特权级（或以上）时访问它们；
+* 代码段 .text 不允许被修改；
+* 只读数据段 .rodata 不允许被修改，也不允许从它上面取指；
+* .data/.bss 均允许被读写，但是不允许从它上面取指。
+
+此外， 之前 提到过内核地址空间中需要存在一个恒等映射到内核数据段之外的可用物理 页帧的逻辑段，这样才能在启用页表机制之后，内核仍能以纯软件的方式读写这些物理页帧。（想想我们的物理页帧管理器相关内容）它们的标志位仅包含 rw ，意味着该 逻辑段只能在 S 特权级以上访问，并且只能读写。
+==给出创建内核地址空间的方法 new_kernel==
+[ch4的os/src/mm/memory_set.rs]
+1. 引入连接脚本提供的内核各段落的符号
+2. 依次根据符号获取对应段落的物理页号->虚拟页号，生成一份逻辑段，插入进内核地址空间中
+3. 建立一个跳板（map_trampoline方法）
+
+#### 应用地址空间
+我们为所有的应用统一采用一套连接脚本
+所有的起始地址BASE_ADDRESS，我们都将其设为0x0，作为一个虚拟起始地址。
+[user/src/linker.ld]
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## 第五章实现Process OS
 解决多个应用灵活创建与执行的问题，发展出进程、调度等操作系统核心概念。
